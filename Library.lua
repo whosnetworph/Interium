@@ -1770,47 +1770,59 @@ function Elements:AddESPPreview(o)
 	model.Name = "AvatarPreview"
 	model.Parent = world
 
-	local relatives = {}
+	local offsets = {} -- part -> Vector3/CFrame relative to root, stored as CFrame
 	local bones = {}
 	local ready = false
-	local rootPart = nil
+	local rootName = nil
 	local displayName = o.Name or (LocalPlayer and LocalPlayer.DisplayName) or "LocalPlayer"
 
-	local function freezeModel(m)
+	local function bakeWelds(m)
+		-- force accessory handles to the pose their welds describe before we anchor
 		for _, d in ipairs(m:GetDescendants()) do
-			if d:IsA("BasePart") then
-				d.Anchored = true
-				d.CanCollide = false
-				d.CastShadow = false
-				d.AssemblyLinearVelocity = Vector3.zero
-				d.AssemblyAngularVelocity = Vector3.zero
-			elseif d:IsA("Script") or d:IsA("LocalScript") then
-				d.Disabled = true
-			elseif d:IsA("Humanoid") then
-				d.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
-				d.PlatformStand = true
-				pcall(function() d.EvaluateStateMachine = false end)
+			if d:IsA("Weld") or d:IsA("Motor6D") then
+				local p0, p1 = d.Part0, d.Part1
+				if p0 and p1 then
+					-- standard: Part0.CFrame * C0 = Part1.CFrame * C1
+					-- put Part0 where the weld says relative to Part1
+					pcall(function()
+						p0.CFrame = p1.CFrame * d.C1 * d.C0:Inverse()
+					end)
+				end
+			elseif d:IsA("WeldConstraint") and d.Part0 and d.Part1 then
+				-- WeldConstraint has no C0/C1; keep current relative by doing nothing
+			end
+		end
+		-- accessory API path
+		for _, acc in ipairs(m:GetChildren()) do
+			if acc:IsA("Accessory") then
+				local handle = acc:FindFirstChild("Handle")
+				local weld = handle and (handle:FindFirstChild("AccessoryWeld") or handle:FindFirstChildOfClass("Weld"))
+				if handle and weld and weld.Part1 then
+					pcall(function()
+						handle.CFrame = weld.Part1.CFrame * weld.C1 * weld.C0:Inverse()
+					end)
+				end
 			end
 		end
 	end
 
-	local function captureRelatives(m)
-		rootPart = m:FindFirstChild("HumanoidRootPart")
+	local function getRoot(m)
+		return m:FindFirstChild("HumanoidRootPart")
 			or m:FindFirstChild("Torso")
 			or m:FindFirstChild("UpperTorso")
 			or m.PrimaryPart
-		if not rootPart then
-			for _, d in ipairs(m:GetDescendants()) do
-				if d:IsA("BasePart") then rootPart = d break end
-			end
-		end
-		if not rootPart then return false end
-		m.PrimaryPart = rootPart
-		local rootCF = rootPart.CFrame
-		relatives = {}
+	end
+
+	local function snapshot(m)
+		local root = getRoot(m)
+		if not root then return false end
+		rootName = root.Name
+		m.PrimaryPart = root
+		local origin = root.CFrame
+		offsets = {}
 		for _, d in ipairs(m:GetDescendants()) do
 			if d:IsA("BasePart") then
-				relatives[d] = rootCF:ToObjectSpace(d.CFrame)
+				offsets[d] = origin:ToObjectSpace(d.CFrame)
 			end
 		end
 		bones = {}
@@ -1832,30 +1844,66 @@ function Elements:AddESPPreview(o)
 				bones[#bones + 1] = { a, b }
 			end
 		end
-		return true
+		return next(offsets) ~= nil
 	end
 
-	local function centerAtOrigin(m)
-		if not rootPart then return end
-		local ok, bbCF = pcall(function()
-			return m:GetBoundingBox()
-		end)
-		if not ok or not bbCF then return end
-		local delta = -bbCF.Position
-		for part, rel in pairs(relatives) do
-			if part.Parent then
-				part.CFrame = part.CFrame + delta
+	local function freeze(m)
+		for _, d in ipairs(m:GetDescendants()) do
+			if d:IsA("BasePart") then
+				d.Anchored = true
+				d.CanCollide = false
+				d.CastShadow = false
+				d.LocalTransparencyModifier = 0
+				pcall(function()
+					d.AssemblyLinearVelocity = Vector3.zero
+					d.AssemblyAngularVelocity = Vector3.zero
+				end)
+			elseif d:IsA("Script") or d:IsA("LocalScript") then
+				d.Disabled = true
+			elseif d:IsA("Humanoid") then
+				d.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+				d.PlatformStand = true
+				d.AutoRotate = false
+				pcall(function() d.EvaluateStateMachine = false end)
 			end
 		end
-		captureRelatives(m)
 	end
 
-	local function applyPose(worldCF)
-		for part, rel in pairs(relatives) do
+	local function pose(yaw)
+		local world = CFrame.Angles(0, yaw, 0)
+		for part, rel in pairs(offsets) do
 			if part.Parent then
-				part.CFrame = worldCF * rel
+				part.CFrame = world * rel
 			end
 		end
+	end
+
+	local function centerSnapshot(m)
+		-- compute bounds of current offsets, shift so midpoint is at origin
+		local minV = Vector3.new(1e9, 1e9, 1e9)
+		local maxV = Vector3.new(-1e9, -1e9, -1e9)
+		for part, rel in pairs(offsets) do
+			if part.Parent then
+				local pos = rel.Position
+				local half = part.Size * 0.5
+				minV = Vector3.new(
+					math.min(minV.X, pos.X - half.X),
+					math.min(minV.Y, pos.Y - half.Y),
+					math.min(minV.Z, pos.Z - half.Z)
+				)
+				maxV = Vector3.new(
+					math.max(maxV.X, pos.X + half.X),
+					math.max(maxV.Y, pos.Y + half.Y),
+					math.max(maxV.Z, pos.Z + half.Z)
+				)
+			end
+		end
+		local mid = (minV + maxV) * 0.5
+		local shift = CFrame.new(-mid)
+		for part, rel in pairs(offsets) do
+			offsets[part] = shift * rel
+		end
+		pose(0)
 	end
 
 	local function fallbackR6()
@@ -1882,9 +1930,18 @@ function Elements:AddESPPreview(o)
 		face.Face = Enum.NormalId.Front
 		face.Texture = "rbxasset://textures/face.png"
 		face.Parent = head
-		freezeModel(model)
-		captureRelatives(model)
-		centerAtOrigin(model)
+		local hrp = Instance.new("Part")
+		hrp.Name = "HumanoidRootPart"
+		hrp.Size = Vector3.new(2, 1, 1)
+		hrp.CFrame = CFrame.new(0, 1, 0)
+		hrp.Transparency = 1
+		hrp.Anchored = true
+		hrp.CanCollide = false
+		hrp.Parent = model
+		model.PrimaryPart = hrp
+		freeze(model)
+		snapshot(model)
+		centerSnapshot(model)
 		ready = true
 	end
 
@@ -1901,33 +1958,51 @@ function Elements:AddESPPreview(o)
 				return Players:CreateHumanoidModelFromUserId(LocalPlayer.UserId)
 			end)
 		end
-		if ok and result then
-			for _, c in ipairs(model:GetChildren()) do c:Destroy() end
-			result.Name = "Avatar"
-			result.Parent = world
-			model:Destroy()
-			model = result
-			freezeModel(model)
-			-- accessories often stream in after the body
-			for _ = 1, 40 do
-				local acc = 0
-				for _, d in ipairs(model:GetDescendants()) do
-					if d:IsA("Accessory") or d:IsA("Hat") then acc = acc + 1 end
-				end
-				if acc > 0 then break end
-				task.wait(0.05)
-			end
-			task.wait(0.15)
-			freezeModel(model)
-			if captureRelatives(model) then
-				centerAtOrigin(model)
-				ready = true
-			else
-				fallbackR6()
-			end
-		else
+		if not (ok and result) then
 			fallbackR6()
+			return
 		end
+
+		for _, c in ipairs(model:GetChildren()) do c:Destroy() end
+		result.Name = "Avatar"
+		result.Parent = world
+		model:Destroy()
+		model = result
+
+		-- let accessories finish streaming before freeze
+		local deadline = os.clock() + 2.5
+		while os.clock() < deadline do
+			local handles = 0
+			for _, d in ipairs(model:GetDescendants()) do
+				if d:IsA("Accessory") and d:FindFirstChild("Handle") then
+					handles = handles + 1
+				end
+			end
+			if handles > 0 then
+				task.wait(0.25)
+				break
+			end
+			task.wait(0.05)
+		end
+		task.wait(0.1)
+
+		bakeWelds(model)
+		freeze(model)
+		if not snapshot(model) then
+			fallbackR6()
+			return
+		end
+		centerSnapshot(model)
+		ready = true
+
+		-- one more pass if more accessories arrive
+		task.delay(0.75, function()
+			if Library._unloaded or not model.Parent then return end
+			bakeWelds(model)
+			freeze(model)
+			snapshot(model)
+			centerSnapshot(model)
+		end)
 	end)
 
 	cam.CFrame = CFrame.new(Vector3.new(0, 1.4, 14), Vector3.new(0, 1.2, 0))
@@ -1965,26 +2040,12 @@ function Elements:AddESPPreview(o)
 	}
 
 	local angle = 0
-	local lastAccCount = 0
 	local conn = RunService.RenderStepped:Connect(function(dt)
 		if Library._unloaded or not slot.Parent then return end
-		if not ready or not model.Parent then return end
+		if not ready then return end
 
-		-- if a late accessory lands, re-bind relatives once
-		local acc = 0
-		for _, d in ipairs(model:GetDescendants()) do
-			if d:IsA("Accessory") or d:IsA("Hat") then acc = acc + 1 end
-		end
-		if acc ~= lastAccCount then
-			lastAccCount = acc
-			freezeModel(model)
-			captureRelatives(model)
-			centerAtOrigin(model)
-		end
-
-		angle = (angle + dt * 0.4) % (math.pi * 2)
-		-- spin in place around origin (Y axis only)
-		applyPose(CFrame.Angles(0, angle, 0))
+		angle = (angle + dt * 0.35) % (math.pi * 2)
+		pose(angle)
 
 		local vs = vp.AbsoluteSize
 		if vs.X < 2 or vs.Y < 2 then return end
@@ -1994,8 +2055,8 @@ function Elements:AddESPPreview(o)
 			return c, sz
 		end)
 		if okb and bbCF and bbSize then
-			local dist = math.max(bbSize.X, bbSize.Y, bbSize.Z) * 2.4
-			dist = math.clamp(dist, 11, 18)
+			local dist = math.max(bbSize.X, bbSize.Y, bbSize.Z) * 2.5
+			dist = math.clamp(dist, 12, 18)
 			cam.CFrame = CFrame.new(bbCF.Position + Vector3.new(0, bbSize.Y * 0.02, dist), bbCF.Position)
 		end
 
@@ -2013,8 +2074,8 @@ function Elements:AddESPPreview(o)
 
 		local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
 		local any = false
-		for part in pairs(relatives) do
-			if part.Parent and not part:FindFirstAncestorOfClass("Accessory") then
+		for part in pairs(offsets) do
+			if part.Parent and not part:FindFirstAncestorOfClass("Accessory") and part.Name ~= "HumanoidRootPart" then
 				for _, c in ipairs({
 					Vector3.new(-1, -1, -1), Vector3.new(-1, -1, 1), Vector3.new(-1, 1, -1), Vector3.new(-1, 1, 1),
 					Vector3.new(1, -1, -1), Vector3.new(1, -1, 1), Vector3.new(1, 1, -1), Vector3.new(1, 1, 1),
