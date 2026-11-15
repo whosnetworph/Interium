@@ -9,14 +9,16 @@ local TextService  = svc("TextService")
 local CoreGui      = svc("CoreGui")
 local Stats        = svc("Stats")
 local HttpService  = svc("HttpService")
+local GuiService   = svc("GuiService")
 
 local LocalPlayer = Players.LocalPlayer
 
 local env = (getgenv and getgenv()) or _G
-if type(env.InteriumUI) == "table" and type(env.InteriumUI.Unload) == "function" then
-	pcall(env.InteriumUI.Unload, env.InteriumUI)
+for _, key in ipairs({ "InteriumUI", "AkaneUI" }) do
+	local old = env[key]
+	if type(old) == "table" and type(old.Unload) == "function" then pcall(old.Unload, old) end
+	env[key] = nil
 end
-env.InteriumUI = nil
 
 local Theme = { Font = Enum.Font.Code, TextSize = 11, TitleSize = 13 }
 
@@ -220,6 +222,38 @@ local function isPress(i)
 	return i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch
 end
 
+local mouseOffset, mouseSolved = Vector2.new(0, 0), false
+
+local function mouse()
+	local m = UIS:GetMouseLocation()
+	return Vector2.new(m.X - mouseOffset.X, m.Y - mouseOffset.Y)
+end
+
+local function calibrate(gui, i)
+	if mouseSolved then return end
+	local m = UIS:GetMouseLocation()
+	local ip = Vector2.new(i.Position.X, i.Position.Y)
+	local a, b = inside(gui, m), inside(gui, ip)
+	if a ~= b then
+		mouseSolved = true
+		mouseOffset = a and Vector2.new(0, 0) or Vector2.new(m.X - ip.X, m.Y - ip.Y)
+		return
+	end
+	if not a then
+		local ok, gi = pcall(function() return GuiService:GetGuiInset() end)
+		if ok and gi and inside(gui, Vector2.new(m.X - gi.X, m.Y - gi.Y)) then
+			mouseSolved = true
+			mouseOffset = Vector2.new(gi.X, gi.Y)
+		end
+	end
+end
+
+local function calib(gui)
+	gui.InputBegan:Connect(function(i)
+		if not mouseSolved and isPress(i) then calibrate(gui, i) end
+	end)
+end
+
 local function emit(obj, ...)
 	if obj.Callback then task.spawn(obj.Callback, ...) end
 	for _, f in ipairs(obj.Changed or {}) do task.spawn(f, ...) end
@@ -267,7 +301,7 @@ end
 local function sweep(container)
 	pcall(function()
 		for _, c in ipairs(container:GetChildren()) do
-			if c:GetAttribute("InteriumUI") then c:Destroy() end
+			if c:GetAttribute("InteriumUI") or c:GetAttribute("AkaneUI") then c:Destroy() end
 		end
 	end)
 end
@@ -377,7 +411,7 @@ local function openPopup(frame, anchor, o)
 
 	local below = ap.Y + as.Y + 1 + gap
 	local up = false
-	if below + h + 2 > vp.Y - 4 and ap.Y - 1 - gap - (h + 2) >= 4 then up = true end
+	if not o.NoFlip and below + h + 2 > vp.Y - 4 and ap.Y - 1 - gap - (h + 2) >= 4 then up = true end
 
 	meta.Up = up
 	frame.AnchorPoint = up and Vector2.new(0, 1) or Vector2.new(0, 0)
@@ -419,7 +453,7 @@ local function tip(gui, str)
 	if not str then return end
 	local token, hovering = 0, false
 	local function move()
-		local m = UIS:GetMouseLocation()
+		local m = mouse()
 		local vp = viewport()
 		local w = TipRoot.AbsoluteSize.X
 		TipRoot.Position = UDim2.fromOffset(math.min(m.X + 14, vp.X - w - 4), m.Y + 16)
@@ -509,22 +543,17 @@ local function magnifier(parent)
 end
 
 local function logo(parent)
-	local f = new("Frame", { Size = UDim2.fromOffset(14, 13), BackgroundTransparency = 1, Parent = parent })
+	local f = new("Frame", { Size = UDim2.fromOffset(10, 13), BackgroundTransparency = 1, Parent = parent })
 	new("Frame", {
-		Position = UDim2.fromOffset(1, 1), Size = UDim2.fromOffset(3, 11),
+		Position = UDim2.fromOffset(2, 0), Size = UDim2.fromOffset(6, 2),
 		Skin = { BackgroundColor3 = "Accent" }, Parent = f,
 	})
 	new("Frame", {
-		Position = UDim2.fromOffset(5.5, 4), Size = UDim2.fromOffset(3, 8),
+		Position = UDim2.fromOffset(4, 2), Size = UDim2.fromOffset(2, 9),
 		Skin = { BackgroundColor3 = "Accent" }, Parent = f,
 	})
 	new("Frame", {
-		Position = UDim2.fromOffset(10, 1), Size = UDim2.fromOffset(3, 11),
-		Skin = { BackgroundColor3 = "Accent" }, Parent = f,
-	})
-	new("Frame", {
-		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(7, 6.5),
-		Size = UDim2.fromOffset(11, 1.5), Rotation = -28,
+		Position = UDim2.fromOffset(2, 11), Size = UDim2.fromOffset(6, 2),
 		Skin = { BackgroundColor3 = "Accent" }, Parent = f,
 	})
 	return f
@@ -543,38 +572,43 @@ local function tabBar(parent, size, padding, opts)
 	})
 
 	function B:Relayout()
-		local x = 0
+		local order = {}
 		for n, o in pairs(B.Tabs) do
-			if o.Btn and o.Btn.Parent then
-				o.X = x
-				o.W = math.ceil(textW(n, size)) + padding * 2
-				o.Btn.Position = UDim2.fromOffset(x, 0)
-				o.Btn.Size = UDim2.new(0, o.W, 1, 0)
-				x = x + o.W
-			end
+			if o.Btn and o.Btn.Parent then order[#order + 1] = { n, o } end
+		end
+		table.sort(order, function(a, b) return a[2].X < b[2].X end)
+		local x = 0
+		for _, e in ipairs(order) do
+			local n, o = e[1], e[2]
+			o.W = math.ceil(textW(n, size)) + padding * 2
+			o.X = x
+			o.Btn.Position = UDim2.fromOffset(x, 0)
+			o.Btn.Size = UDim2.new(0, o.W, 1, 0)
+			x = x + o.W
 		end
 		B.Width = x
 		if opts.OnWidth then opts.OnWidth(B.Width) end
 		if B.Active and B.Tabs[B.Active] then
 			local t = B.Tabs[B.Active]
+			ul.Visible = true
 			ul.Position = UDim2.new(0, t.X, 1, 0)
 			ul.Size = UDim2.new(0, t.W, 0, 2)
+		elseif not B.Active then
+			ul.Visible = false
 		end
 	end
 
 	function B:Remove(str)
 		local t = B.Tabs[str]
 		if not t then return end
-		if t.Btn then t.Btn:Destroy() end
+		if t.Btn then pcall(function() t.Btn:Destroy() end) end
 		B.Tabs[str] = nil
-		if B.Active == str then
-			B.Active = nil
-			ul.Visible = false
-		end
+		if B.Active == str then B.Active = nil end
 		B:Relayout()
 	end
 
 	function B:Add(str, onClick)
+		if B.Tabs[str] then return B.Tabs[str].Btn end
 		local w = math.ceil(textW(str, size)) + padding * 2
 		local b = new("TextButton", {
 			Position = UDim2.fromOffset(B.Width, 0), Size = UDim2.new(0, w, 1, 0), Text = str,
@@ -589,6 +623,7 @@ local function tabBar(parent, size, padding, opts)
 		b.MouseLeave:Connect(function()
 			if B.Active ~= str then tween(b, { TextColor3 = Theme.TextDim }, 0.18, QUAD) end
 		end)
+		calib(b)
 		b.MouseButton1Click:Connect(function()
 			if onClick then onClick(str) else B:Select(str) end
 		end)
@@ -638,6 +673,7 @@ local function makeItem(parent, str, h, right)
 			TextXAlignment = Enum.TextXAlignment.Right, Skin = { TextColor3 = "TextOff" }, Parent = b,
 		})
 	end
+	calib(b)
 	local sel = false
 	local function set(s, instant)
 		sel = s
@@ -709,7 +745,7 @@ local function makeContainer(content, tab, popupParent)
 	return setmetatable({ Content = content, Tab = tab, PopupParent = popupParent }, { __index = Elements })
 end
 
-local function buildDropdown(parent, o)
+local function buildDropdown(parent, o, inline)
 	local D = {
 		Type = "Dropdown", Items = o.Items or {}, Multi = o.Multi, Callback = o.Callback, Changed = {},
 	}
@@ -762,7 +798,7 @@ local function buildDropdown(parent, o)
 	local hovering = false
 	local function paint(instant)
 		local s = (list and isOpen(list)) and "open" or (hovering and "hover" or "idle")
-		local bc = s == "open" and Theme.Text or (s == "hover" and Theme.BorderHover or Theme.Border)
+		local bc = s == "open" and Theme.Border or (s == "hover" and Theme.BorderHover or Theme.Border)
 		local ac = s == "idle" and Theme.TextDim or Theme.Text
 		if instant then
 			bs.Color = bc
@@ -776,14 +812,36 @@ local function buildDropdown(parent, o)
 	end
 	bind(box, function() paint(true) end)
 
+	local slot, panel, inlineOpen
 	local function ensureList()
 		if list then return end
-		list = newPopup(100, M.Item)
+		local host
+		if inline then
+			slot = new("Frame", {
+				Position = UDim2.fromOffset(0, M.Label + M.LabelGap + M.Box - 1), Size = UDim2.new(1, 0, 0, 0),
+				BackgroundTransparency = 1, ClipsDescendants = true, Visible = false, Parent = parent,
+			})
+			panel = new("Frame", {
+				Position = UDim2.fromOffset(1, 1), Size = UDim2.new(1, -2, 0, 0), Skin = { BackgroundColor3 = "Window" }, Parent = slot,
+			})
+			stroke(panel, "Border")
+			list, host = slot, panel
+		else
+			list = newPopup(100, M.Item)
+			host = PopupOf[list].Panel
+		end
 		sf = new("ScrollingFrame", {
 			Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ScrollBarThickness = 0,
-			CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, Parent = PopupOf[list].Panel,
+			CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, Parent = host,
 		})
 		vlist(sf, 0)
+	end
+
+	local function closeInline()
+		inlineOpen = false
+		tween(slot, { Size = UDim2.new(1, 0, 0, 0) }, 0.18, QUAD, IN)
+		tween(parent, { Size = UDim2.new(1, 0, 0, M.DD) }, 0.18, QUAD, IN)
+		task.delay(0.2, function() if not inlineOpen then slot.Visible = false end end)
 	end
 
 	local function populate()
@@ -847,10 +905,21 @@ local function buildDropdown(parent, o)
 		if isOpen(list) then closePopup(list) return end
 		populate()
 		local rows = math.max(1, math.min(#D.Items, 8))
-		resizePopup(list, box.AbsoluteSize.X, rows * M.Item, false)
+		local h = rows * M.Item
 		sf.ScrollingEnabled = #D.Items > 8
 		sf.CanvasPosition = Vector2.new()
-		openPopup(list, box, { Child = o.PopupParent ~= nil, OnClose = function() paint() end })
+		if inline then
+			closeAllPopups()
+			inlineOpen = true
+			slot.Visible = true
+			panel.Size = UDim2.new(1, -2, 0, h)
+			table.insert(Popups, { Frame = slot, Anchor = box, Hit = { slot, box }, Close = closeInline, OnClose = function() paint() end })
+			tween(slot, { Size = UDim2.new(1, 0, 0, h + 2) }, 0.22, QUINT)
+			tween(parent, { Size = UDim2.new(1, 0, 0, M.DD - 1 + h + 2) }, 0.22, QUINT)
+		else
+			resizePopup(list, box.AbsoluteSize.X, h, false)
+			openPopup(list, box, { Child = true, Gap = -1, NoFlip = true, OnClose = function() paint() end })
+		end
 		paint()
 	end)
 
@@ -1032,7 +1101,8 @@ local function buildPickerUI()
 	local function drag(btn, fn)
 		btn.InputBegan:Connect(function(i)
 			if isPress(i) then
-				fn(UIS:GetMouseLocation())
+				calibrate(btn, i)
+				fn(mouse())
 				Library._drag = fn
 				Library._dragEnd = nil
 			end
@@ -1148,6 +1218,7 @@ local function attachPicker(holder, id, o)
 	P.Value = P.Color
 
 	local sw = new("TextButton", { Size = UDim2.fromOffset(20, 12), LayoutOrder = #holder:GetChildren(), Parent = holder })
+	calib(sw)
 	local fill, face = swatchFace(sw, 20, 12)
 	local sws = face:FindFirstChildOfClass("UIStroke")
 	sw.MouseEnter:Connect(function() tween(sws, { Color = Theme.BorderHover }, 0.12, QUAD) end)
@@ -1272,6 +1343,7 @@ local function attachKeybind(holder, id, o)
 	K.Value = K.State
 	local lbl = new("TextButton", { Size = UDim2.fromOffset(20, 14), LayoutOrder = #holder:GetChildren(), TextColor3 = Theme.TextDim, Parent = holder })
 	local hovering = false
+	calib(lbl)
 
 	local function render(instant)
 		local t = K.Listening and "[...]" or ("[" .. (K.Key == "None" and "NONE" or shortKey(K.Key)) .. "]")
@@ -1376,6 +1448,7 @@ function Elements:AddToggle(id, o)
 		TextXAlignment = Enum.TextXAlignment.Left, TextColor3 = Theme.TextDim, Parent = row,
 	})
 
+	calib(row)
 	local hovering = false
 	local function render(animate)
 		local on = T.Value
@@ -1486,9 +1559,10 @@ function Elements:AddSlider(id, o)
 	end
 	hit.InputBegan:Connect(function(i)
 		if isPress(i) then
+			calibrate(hit, i)
 			dragging = true
 			border()
-			setFromX(UIS:GetMouseLocation().X)
+			setFromX(mouse().X)
 			Library._drag = function(mp) setFromX(mp.X) end
 			Library._dragEnd = function() dragging = false; border() end
 		end
@@ -1506,7 +1580,7 @@ function Elements:AddDropdown(id, o)
 	o.Position = UDim2.fromOffset(1, M.Label + M.LabelGap + 1)
 	o.Size = UDim2.new(1, -2, 0, M.Box - 2)
 	o.PopupParent = self.PopupParent
-	local D = buildDropdown(row, o)
+	local D = buildDropdown(row, o, o.PopupParent == nil)
 	return finish(self, D, id, o, row, text)
 end
 
@@ -1567,17 +1641,19 @@ local function makeButton(parent, o, size)
 		Position = UDim2.fromOffset(1, 1), Size = UDim2.new(1, -2, 1, -2), Text = o.Text or "Button",
 		BackgroundColor3 = Theme.Box, Parent = slot,
 	})
-	local st = stroke(b, "Border")
+	local st = stroke(b, "Box")
+	calib(b)
 	local B = { Slot = slot, Button = b, Active = false }
 	local state = "idle"
 
 	local function colors()
 		if B.Active or o.Accent then
 			local k = state == "down" and 0.26 or (state == "hover" and 0.2 or 0.14)
-			return Theme.Section:Lerp(Theme.Accent, k), Theme.Accent, Theme.Accent
+			local bg = Theme.Section:Lerp(Theme.Accent, k)
+			return bg, bg, Theme.Accent
 		end
-		local bg = state == "down" and Theme.Element or (state == "hover" and Theme.Box:Lerp(Theme.Text, 0.04) or Theme.Box)
-		return bg, state == "idle" and Theme.Border or Theme.BorderHover, Theme.Text
+		local bg = state == "down" and Theme.Element or (state == "hover" and Theme.Box:Lerp(Theme.Text, 0.05) or Theme.Box)
+		return bg, bg, Theme.Text
 	end
 	local function apply(s, t)
 		state = s
@@ -1648,30 +1724,36 @@ end
 
 function Elements:AddESPPreview(o)
 	o = o or {}
-	local height = o.Height or 220
+	local height = o.Height or 240
 	local slot = new("Frame", {
-		Size = UDim2.new(1, 0, 0, height), Skin = { BackgroundColor3 = "Window" }, Parent = self.Content,
+		Size = UDim2.new(1, 0, 0, height), Skin = { BackgroundColor3 = "Window" },
+		ClipsDescendants = true, Parent = self.Content,
 	})
 	stroke(slot, "Border")
+
 	local vp = Instance.new("ViewportFrame")
+	vp.Name = "ESPPreview"
 	vp.Size = UDim2.new(1, -2, 1, -2)
 	vp.Position = UDim2.fromOffset(1, 1)
-	vp.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+	vp.BackgroundColor3 = Color3.fromRGB(16, 16, 20)
 	vp.BorderSizePixel = 0
+	vp.Ambient = Color3.fromRGB(180, 180, 190)
+	vp.LightColor = Color3.fromRGB(255, 255, 255)
+	vp.LightDirection = Vector3.new(-1, -1, -1)
 	vp.Parent = slot
 
 	local world = Instance.new("WorldModel")
 	world.Parent = vp
 	local cam = Instance.new("Camera")
-	cam.FieldOfView = 40
+	cam.FieldOfView = 35
 	cam.Parent = vp
 	vp.CurrentCamera = cam
 
-	local root = Instance.new("Model")
-	root.Name = "Preview"
-	root.Parent = world
+	local model = Instance.new("Model")
+	model.Name = "R6Preview"
+	model.Parent = world
 
-	local function part(name, size, cf, color)
+	local function limb(name, size, cf, color)
 		local p = Instance.new("Part")
 		p.Name = name
 		p.Size = size
@@ -1679,52 +1761,57 @@ function Elements:AddESPPreview(o)
 		p.Anchored = true
 		p.CanCollide = false
 		p.Material = Enum.Material.SmoothPlastic
-		p.Color = color or Color3.fromRGB(180, 180, 190)
-		p.Parent = root
+		p.Color = color
+		p.TopSurface = Enum.SurfaceType.Smooth
+		p.BottomSurface = Enum.SurfaceType.Smooth
+		p.Parent = model
 		return p
 	end
 
-	local torso = part("UpperTorso", Vector3.new(1.6, 1.6, 0.8), CFrame.new(0, 2.2, 0), Color3.fromRGB(70, 130, 200))
-	local lower = part("LowerTorso", Vector3.new(1.4, 0.7, 0.7), CFrame.new(0, 1.35, 0), Color3.fromRGB(60, 110, 180))
-	local head = part("Head", Vector3.new(1.1, 1.1, 1.1), CFrame.new(0, 3.35, 0), Color3.fromRGB(230, 190, 150))
-	local lua = part("LeftUpperArm", Vector3.new(0.55, 1.2, 0.55), CFrame.new(-1.2, 2.3, 0), Color3.fromRGB(70, 130, 200))
-	local lla = part("LeftLowerArm", Vector3.new(0.5, 1.0, 0.5), CFrame.new(-1.2, 1.25, 0), Color3.fromRGB(230, 190, 150))
-	local rua = part("RightUpperArm", Vector3.new(0.55, 1.2, 0.55), CFrame.new(1.2, 2.3, 0), Color3.fromRGB(70, 130, 200))
-	local rla = part("RightLowerArm", Vector3.new(0.5, 1.0, 0.5), CFrame.new(1.2, 1.25, 0), Color3.fromRGB(230, 190, 150))
-	local lul = part("LeftUpperLeg", Vector3.new(0.6, 1.2, 0.6), CFrame.new(-0.4, 0.55, 0), Color3.fromRGB(50, 55, 70))
-	local lll = part("LeftLowerLeg", Vector3.new(0.55, 1.1, 0.55), CFrame.new(-0.4, -0.55, 0), Color3.fromRGB(50, 55, 70))
-	local rul = part("RightUpperLeg", Vector3.new(0.6, 1.2, 0.6), CFrame.new(0.4, 0.55, 0), Color3.fromRGB(50, 55, 70))
-	local rll = part("RightLowerLeg", Vector3.new(0.55, 1.1, 0.55), CFrame.new(0.4, -0.55, 0), Color3.fromRGB(50, 55, 70))
+	local skin = Color3.fromRGB(204, 170, 140)
+	local shirt = Color3.fromRGB(72, 120, 190)
+	local pants = Color3.fromRGB(42, 46, 58)
+
+	local torso = limb("Torso", Vector3.new(2, 2, 1), CFrame.new(0, 1, 0), shirt)
+	local head = limb("Head", Vector3.new(1.2, 1.2, 1.2), CFrame.new(0, 2.6, 0), skin)
+	local la = limb("Left Arm", Vector3.new(1, 2, 1), CFrame.new(-1.5, 1, 0), skin)
+	local ra = limb("Right Arm", Vector3.new(1, 2, 1), CFrame.new(1.5, 1, 0), skin)
+	local ll = limb("Left Leg", Vector3.new(1, 2, 1), CFrame.new(-0.5, -1, 0), pants)
+	local rl = limb("Right Leg", Vector3.new(1, 2, 1), CFrame.new(0.5, -1, 0), pants)
+
+	local face = Instance.new("Decal")
+	face.Face = Enum.NormalId.Front
+	face.Texture = "rbxasset://textures/face.png"
+	face.Parent = head
 
 	local bases = {}
-	for _, p in ipairs(root:GetChildren()) do
+	for _, p in ipairs(model:GetChildren()) do
 		if p:IsA("BasePart") then bases[p] = p.CFrame end
 	end
+
 	local bones = {
-		{ head, torso }, { torso, lower },
-		{ torso, lua }, { lua, lla },
-		{ torso, rua }, { rua, rla },
-		{ lower, lul }, { lul, lll },
-		{ lower, rul }, { rul, rll },
+		{ head, torso },
+		{ torso, la }, { torso, ra },
+		{ torso, ll }, { torso, rl },
 	}
 
-	cam.CFrame = CFrame.new(Vector3.new(0, 2.0, 7.2), Vector3.new(0, 2.0, 0))
+	cam.CFrame = CFrame.new(Vector3.new(0, 1.1, 7.5), Vector3.new(0, 1.0, 0))
 
 	local overlay = new("Frame", {
-		Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 5, Parent = slot,
+		Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ClipsDescendants = true, ZIndex = 5, Parent = slot,
 	})
 	local box = new("Frame", { BackgroundTransparency = 1, Visible = false, Parent = overlay })
 	local boxStroke = stroke(box, "Accent", 1)
 	local nameLbl = new("TextLabel", {
-		Size = UDim2.fromOffset(120, 14), Text = o.Name or "Enemy", TextSize = 12,
+		Size = UDim2.fromOffset(100, 14), Text = o.Name or "LocalPlayer", TextSize = 11,
 		TextXAlignment = Enum.TextXAlignment.Center, Visible = false, Parent = overlay,
 	})
 	local hpBg = new("Frame", {
-		Size = UDim2.fromOffset(4, 60), BackgroundColor3 = Color3.fromRGB(30, 30, 34), Visible = false, Parent = overlay,
+		Size = UDim2.fromOffset(3, 40), BackgroundColor3 = Color3.fromRGB(28, 28, 32), Visible = false, Parent = overlay,
 	})
 	stroke(hpBg, "BorderDark")
 	local hpFill = new("Frame", {
-		AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.fromScale(1, 0.72),
+		AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.fromScale(1, 0.78),
 		Skin = { BackgroundColor3 = "Accent" }, Parent = hpBg,
 	})
 	local skLines = {}
@@ -1743,39 +1830,52 @@ function Elements:AddESPPreview(o)
 	local angle = 0
 	local conn = RunService.RenderStepped:Connect(function(dt)
 		if Library._unloaded or not slot.Parent then return end
-		angle = (angle + dt * 0.55) % (math.pi * 2)
+		angle = (angle + dt * 0.5) % (math.pi * 2)
 		local rot = CFrame.Angles(0, angle, 0)
-		for p, base in pairs(bases) do
-			p.CFrame = rot * base
+		for part, base in pairs(bases) do
+			part.CFrame = rot * base
 		end
+
+		local vs = vp.AbsoluteSize
+		if vs.X < 2 or vs.Y < 2 then return end
 
 		local function project(worldPos)
 			local rel = cam.CFrame:PointToObjectSpace(worldPos)
 			if rel.Z >= -0.05 then return nil end
-			local aspect = vp.AbsoluteSize.X / math.max(vp.AbsoluteSize.Y, 1)
+			local aspect = vs.X / vs.Y
 			local fov = math.rad(cam.FieldOfView)
 			local sy = 1 / math.tan(fov * 0.5)
 			local sx = sy / aspect
 			local ndcX = (rel.X * sx) / -rel.Z
 			local ndcY = (rel.Y * sy) / -rel.Z
-			return Vector2.new((ndcX * 0.5 + 0.5) * vp.AbsoluteSize.X, (0.5 - ndcY * 0.5) * vp.AbsoluteSize.Y)
+			local px = (ndcX * 0.5 + 0.5) * vs.X
+			local py = (0.5 - ndcY * 0.5) * vs.Y
+			if px < -20 or px > vs.X + 20 or py < -20 or py > vs.Y + 20 then return nil end
+			return Vector2.new(px, py)
 		end
 
 		local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
 		local any = false
-		for p in pairs(bases) do
-			local corners = {
+		for part in pairs(bases) do
+			for _, c in ipairs({
 				Vector3.new(-1, -1, -1), Vector3.new(-1, -1, 1), Vector3.new(-1, 1, -1), Vector3.new(-1, 1, 1),
 				Vector3.new(1, -1, -1), Vector3.new(1, -1, 1), Vector3.new(1, 1, -1), Vector3.new(1, 1, 1),
-			}
-			for _, c in ipairs(corners) do
-				local sp = project((p.CFrame * CFrame.new(c * p.Size * 0.5)).Position)
+			}) do
+				local sp = project((part.CFrame * CFrame.new(c * part.Size * 0.5)).Position)
 				if sp then
 					any = true
 					minX = math.min(minX, sp.X); minY = math.min(minY, sp.Y)
 					maxX = math.max(maxX, sp.X); maxY = math.max(maxY, sp.Y)
 				end
 			end
+		end
+
+		local padPx = 2
+		if any then
+			minX = math.clamp(minX - padPx, 0, vs.X)
+			minY = math.clamp(minY - padPx, 0, vs.Y)
+			maxX = math.clamp(maxX + padPx, 0, vs.X)
+			maxY = math.clamp(maxY + padPx, 0, vs.Y)
 		end
 
 		local col = Theme.Accent
@@ -1786,7 +1886,7 @@ function Elements:AddESPPreview(o)
 		local showHp = Library.Flags[flags.Health] == true
 		local showSk = Library.Flags[flags.Skeleton] == true
 
-		if showBox and any then
+		if showBox and any and maxX > minX and maxY > minY then
 			box.Visible = true
 			box.Position = UDim2.fromOffset(math.floor(minX), math.floor(minY))
 			box.Size = UDim2.fromOffset(math.max(1, math.floor(maxX - minX)), math.max(1, math.floor(maxY - minY)))
@@ -1794,22 +1894,28 @@ function Elements:AddESPPreview(o)
 		else
 			box.Visible = false
 		end
+
 		if showName and any then
 			nameLbl.Visible = true
 			nameLbl.TextColor3 = col
-			nameLbl.Position = UDim2.fromOffset(math.floor((minX + maxX) * 0.5 - 60), math.floor(minY - 16))
+			local nx = math.clamp(math.floor((minX + maxX) * 0.5 - 50), 0, math.max(0, vs.X - 100))
+			local ny = math.clamp(math.floor(minY - 16), 0, math.max(0, vs.Y - 14))
+			nameLbl.Position = UDim2.fromOffset(nx, ny)
 		else
 			nameLbl.Visible = false
 		end
+
 		if showHp and any then
 			hpBg.Visible = true
-			local h = math.max(20, maxY - minY)
+			local h = math.max(16, maxY - minY)
 			hpBg.Size = UDim2.fromOffset(3, math.floor(h))
-			hpBg.Position = UDim2.fromOffset(math.floor(minX - 6), math.floor(minY))
+			local hx = math.clamp(math.floor(minX - 6), 0, math.max(0, vs.X - 3))
+			hpBg.Position = UDim2.fromOffset(hx, math.floor(minY))
 			hpFill.BackgroundColor3 = col
 		else
 			hpBg.Visible = false
 		end
+
 		if showSk then
 			for i, pair in ipairs(bones) do
 				local a = project(pair[1].Position)
@@ -1978,7 +2084,7 @@ end
 
 function Library:CreateWindow(o)
 	o = o or {}
-	Library.Name = o.Name or Library.Name
+	if o.Name and o.Name ~= "Akane" and o.Name ~= "Interium" then Library.Name = o.Name end
 	if o.Folder then Library.Folder = o.Folder end
 	if o.ToggleKey then Library.ToggleKey = o.ToggleKey end
 	local W = { Tabs = {}, Active = nil, Visible = false }
@@ -2029,7 +2135,7 @@ function Library:CreateWindow(o)
 			frameStroke.Transparency = 0
 		end
 		local origin = Vector2.new(frame.Position.X.Offset, frame.Position.Y.Offset)
-		local start = UIS:GetMouseLocation()
+		local start = mouse()
 		W.Pos = UDim2.fromOffset(origin.X, origin.Y)
 		frame.Position = W.Pos
 		Library._dragEnd = nil
@@ -2049,7 +2155,9 @@ function Library:CreateWindow(o)
 
 	local PG = M.Page
 	function W:SelectTab(tab, instant)
+		if not tab or tab.Detached then return end
 		if W.Active == tab then return end
+		closeAllPopups()
 		local prev = W.Active
 		W.Active = tab
 		tabsBar:Select(tab.Name, instant)
@@ -2074,7 +2182,21 @@ function Library:CreateWindow(o)
 		end
 	end
 
+	local dropOverlay = new("Frame", {
+		Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Visible = false, ZIndex = 80, Parent = frame,
+	})
+	local dropTint = new("Frame", {
+		Size = UDim2.fromScale(1, 1), BackgroundTransparency = 0.6, Skin = { BackgroundColor3 = "Accent" }, Parent = dropOverlay,
+	})
+	new("TextLabel", {
+		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(200, 22), Text = "Drop to reattach", TextSize = Theme.TitleSize, Parent = dropOverlay,
+	})
+
 	function W:AddTab(name)
+		for _, t in ipairs(W.Tabs) do
+			if t.Name == name then return t end
+		end
 		local tab = setmetatable({ Name = name, Count = { Left = 0, Right = 0 }, Detached = false }, TabMethods)
 		local tabBtn = tabsBar:Add(name, function()
 			if not tab.Detached then W:SelectTab(tab) end
@@ -2097,47 +2219,44 @@ function Library:CreateWindow(o)
 		vlist(tab.RightCol, M.ColGap)
 
 		local detachWin, detachHead
-		local dropOverlay = new("Frame", {
-			Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Visible = false, ZIndex = 50, Parent = frame,
-		})
-		local dropTint = new("Frame", {
-			Size = UDim2.fromScale(1, 1), BackgroundTransparency = 0.55, Skin = { BackgroundColor3 = "Accent" }, Parent = dropOverlay,
-		})
-		new("TextLabel", {
-			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(180, 24),
-			Text = "Drop to reattach", TextSize = Theme.TitleSize, Parent = dropOverlay,
-		})
+		local grabOff = Vector2.new(0, 0)
 
-		local function destroyDetach()
+		local function destroyDetachWin()
 			if detachWin then
-				detachWin:Destroy()
-				detachWin = nil
-				detachHead = nil
+				pcall(function() detachWin:Destroy() end)
+				detachWin, detachHead = nil, nil
 			end
+			tab.DetachWin = nil
+		end
+
+		local function placePageInBody()
+			page.Parent = body
+			page.Size = UDim2.new(1, -PG * 2, 1, -PG * 2)
+			page.Position = UDim2.fromOffset(PG, PG)
 		end
 
 		function tab:Reattach()
 			if not tab.Detached then return end
 			tab.Detached = false
-			destroyDetach()
 			dropOverlay.Visible = false
-			page.Parent = body
-			page.Size = UDim2.new(1, -PG * 2, 1, -PG * 2)
-			page.Position = UDim2.fromOffset(PG, PG)
-			tabsBar:Add(name, function()
+			placePageInBody()
+			destroyDetachWin()
+			local btn = tabsBar:Add(name, function()
 				if not tab.Detached then W:SelectTab(tab) end
 			end)
-			tab.Btn = tabsBar.Tabs[name] and tabsBar.Tabs[name].Btn
+			tab.Btn = btn
 			W:wireTabDrag(tab)
-			if not W.Active or W.Active.Detached then
-				W:SelectTab(tab, true)
-			else
+			local otherActive = W.Active and not W.Active.Detached and W.Active ~= tab
+			if otherActive then
 				page.Visible = false
 				page.GroupTransparency = 1
+			else
+				W.Active = nil
+				W:SelectTab(tab, true)
 			end
 		end
 
-		function tab:Detach(at)
+		function tab:Detach(at, follow)
 			if tab.Detached then return end
 			tab.Detached = true
 			if W.Active == tab then
@@ -2146,36 +2265,52 @@ function Library:CreateWindow(o)
 					if t ~= tab and not t.Detached then other = t break end
 				end
 				W.Active = nil
-				if other then W:SelectTab(other, true) else page.Visible = false end
+				if other then
+					W:SelectTab(other, true)
+				else
+					page.Visible = false
+					page.GroupTransparency = 1
+				end
 			end
 			tabsBar:Remove(name)
 			tab.Btn = nil
 
-			local dw = math.floor(frame.AbsoluteSize.X * 0.55)
-			local dh = math.floor(frame.AbsoluteSize.Y * 0.7)
-			local mp = at or UIS:GetMouseLocation()
+			local dw = math.max(280, math.floor(frame.AbsoluteSize.X * 0.52))
+			local dh = math.max(220, math.floor(frame.AbsoluteSize.Y * 0.65))
+			local mp = at or mouse()
+			local px = math.floor(mp.X - (follow and grabOff.X or dw * 0.5))
+			local py = math.floor(mp.Y - (follow and grabOff.Y or 14))
+
 			detachWin = new("Frame", {
 				Name = "Detached_" .. name,
 				Size = UDim2.fromOffset(dw + 2, dh + 2),
-				Position = UDim2.fromOffset(math.floor(mp.X - dw / 2), math.floor(mp.Y - 14)),
-				Skin = { BackgroundColor3 = "Window" }, Active = true, Parent = Gui,
+				Position = UDim2.fromOffset(px, py),
+				Skin = { BackgroundColor3 = "Window" }, Active = true, ZIndex = 60, Parent = Gui,
 			})
 			stroke(detachWin, "Border")
 			local dInner = new("Frame", {
-				Position = UDim2.fromOffset(1, 1), Size = UDim2.new(1, -2, 1, -2), Skin = { BackgroundColor3 = "Window" }, Parent = detachWin,
+				Position = UDim2.fromOffset(1, 1), Size = UDim2.new(1, -2, 1, -2),
+				Skin = { BackgroundColor3 = "Window" }, Parent = detachWin,
 			})
 			stroke(dInner, "BorderDark")
-			detachHead = new("Frame", { Size = UDim2.new(1, 0, 0, M.Header), Skin = { BackgroundColor3 = "Section" }, Parent = dInner })
-			new("Frame", { Position = UDim2.new(0, 0, 1, -1), Size = UDim2.new(1, 0, 0, 1), Skin = { BackgroundColor3 = "Border" }, Parent = detachHead })
+			detachHead = new("Frame", {
+				Size = UDim2.new(1, 0, 0, M.Header), Skin = { BackgroundColor3 = "Section" }, Parent = dInner,
+			})
+			new("Frame", {
+				Position = UDim2.new(0, 0, 1, -1), Size = UDim2.new(1, 0, 0, 1),
+				Skin = { BackgroundColor3 = "Border" }, Parent = detachHead,
+			})
 			local dhl = new("Frame", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Parent = detachHead })
 			hlist(dhl, 0)
 			pad(dhl, M.Page, 0, 0, 0)
 			new("TextLabel", {
-				AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.fromOffset(0, 14), Text = name, TextSize = Theme.TitleSize, Parent = dhl,
+				AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.fromOffset(0, 14),
+				Text = name, TextSize = Theme.TitleSize, Parent = dhl,
 			})
 			local closeBtn = new("TextButton", {
-				AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0), Size = UDim2.fromOffset(18, 18),
-				Text = "x", TextSize = 12, Skin = { TextColor3 = "TextDim" }, Parent = detachHead,
+				AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0),
+				Size = UDim2.fromOffset(18, 18), Text = "x", TextSize = 12,
+				Skin = { TextColor3 = "TextDim" }, Parent = detachHead,
 			})
 			closeBtn.MouseButton1Click:Connect(function() tab:Reattach() end)
 
@@ -2188,15 +2323,19 @@ function Library:CreateWindow(o)
 			page.Size = UDim2.new(1, -PG * 2, 1, -PG * 2)
 			page.Visible = true
 			page.GroupTransparency = 0
+			tab.DetachWin = detachWin
 
-			detachHead.InputBegan:Connect(function(i)
+			local function startMove(i)
 				if i.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+				calibrate(detachHead, i)
 				local origin = Vector2.new(detachWin.Position.X.Offset, detachWin.Position.Y.Offset)
-				local start = UIS:GetMouseLocation()
+				local start = mouse()
 				Library._dragEnd = function()
-					dropOverlay.Visible = false
-					if inside(frame, UIS:GetMouseLocation()) then
+					local mp2 = mouse()
+					if inside(frame, mp2) then
 						tab:Reattach()
+					else
+						dropOverlay.Visible = false
 					end
 				end
 				Library._drag = function(mp2)
@@ -2206,34 +2345,49 @@ function Library:CreateWindow(o)
 					detachWin.Position = UDim2.fromOffset(x, y)
 					dropOverlay.Visible = inside(frame, mp2)
 				end
-			end)
-			tab.DetachWin = detachWin
+			end
+			detachHead.InputBegan:Connect(startMove)
 		end
 
 		function W:wireTabDrag(t)
 			local btn = t.Btn
 			if not btn then return end
-			local press, startPos, armed
 			btn.InputBegan:Connect(function(i)
 				if i.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
 				if t.Detached then return end
-				press = true
-				armed = false
-				startPos = UIS:GetMouseLocation()
+				calibrate(btn, i)
+				local start = mouse()
+				local armed = false
 				Library._dragEnd = function()
-					press = false
 					dropOverlay.Visible = false
-					if armed and not inside(frame, UIS:GetMouseLocation()) then
-						t:Detach(UIS:GetMouseLocation())
+					if t.Detached then
+						local mp2 = mouse()
+						if inside(frame, mp2) then
+							t:Reattach()
+						end
 					end
-					armed = false
 				end
 				Library._drag = function(mp)
-					if not press or t.Detached then return end
-					local d = (mp - startPos).Magnitude
-					if d > 12 then
+					if t.Detached then
+						if t.DetachWin then
+							t.DetachWin.Position = UDim2.fromOffset(
+								math.floor(mp.X - grabOff.X),
+								math.floor(mp.Y - grabOff.Y)
+							)
+						end
+						dropOverlay.Visible = inside(frame, mp)
+						return
+					end
+					if (mp - start).Magnitude > 10 and not armed then
 						armed = true
-						dropOverlay.Visible = false
+						grabOff = Vector2.new(40, 12)
+						t:Detach(mp, true)
+						if t.DetachWin then
+							t.DetachWin.Position = UDim2.fromOffset(
+								math.floor(mp.X - grabOff.X),
+								math.floor(mp.Y - grabOff.Y)
+							)
+						end
 					end
 				end
 			end)
@@ -2264,7 +2418,8 @@ function Library:CreateWindow(o)
 	sres.ZIndex = 30
 	spanel.ClipsDescendants = true
 	vlist(spanel, 0)
-	local searchW = 0
+	local SEARCH_W = 150
+	local searchW = SEARCH_W
 	local firstPick
 
 	local function showResults(h, animate)
@@ -2366,10 +2521,13 @@ function Library:CreateWindow(o)
 		closeAllPopups(field)
 		searchToken = searchToken + 1
 		local tx = tabsHolder.AbsolutePosition.X - head.AbsolutePosition.X
-		searchW = head.AbsoluteSize.X - tx - 7
+		local hw = head.AbsoluteSize.X
+		searchW = SEARCH_W
+		local left = hw - 7 - searchW
+		local overlap = tx + tabsBar.Width + 8 > left
 		local meta = PopupOf[sres]
 		meta.W = searchW
-		sres.Position = UDim2.fromOffset(tx, M.Header)
+		sres.Position = UDim2.fromOffset(left, M.Header)
 		sres.Size = UDim2.fromOffset(searchW + 2, 0)
 		meta.Panel.Size = UDim2.fromOffset(searchW, 0)
 		meta.Panel.Position = UDim2.fromOffset(1, 1)
@@ -2382,7 +2540,7 @@ function Library:CreateWindow(o)
 		field.Size = UDim2.fromOffset(18, 18)
 		tween(field, { Size = UDim2.fromOffset(searchW, 18) }, 0.28, QUINT)
 		tween(stb, { TextTransparency = 0 }, 0.22, QUAD)
-		tween(tabsHolder, { GroupTransparency = 1 }, 0.18, QUAD)
+		if overlap then tween(tabsHolder, { GroupTransparency = 1 }, 0.18, QUAD) end
 		if not Library.Animations then
 			field.Size = UDim2.fromOffset(searchW, 18)
 			stb.TextTransparency = 0
@@ -2392,8 +2550,11 @@ function Library:CreateWindow(o)
 
 	sb.MouseEnter:Connect(function() if not W.SearchOpen then setMag(Theme.Text) end end)
 	sb.MouseLeave:Connect(function() if not W.SearchOpen then setMag(Theme.TextDim) end end)
-	sb.MouseButton1Click:Connect(function()
-		if isOpen(field) then closePopup(field) else openSearch() end
+	sb.InputBegan:Connect(function(i)
+		if isPress(i) then
+			calibrate(sb, i)
+			if isOpen(field) then closePopup(field) else openSearch() end
+		end
 	end)
 	bind(sb, function() setMag(W.SearchOpen and Theme.Text or Theme.TextDim, true) end)
 
@@ -2448,15 +2609,16 @@ function Library:CreateWindow(o)
 end
 
 local Column = new("Frame", {
-	Name = "Column", Position = UDim2.fromOffset(12, 12), Size = UDim2.fromOffset(0, 0),
+	Name = "Column", AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 48), Size = UDim2.fromOffset(0, 0),
 	AutomaticSize = Enum.AutomaticSize.XY, BackgroundTransparency = 1, Parent = HUD,
 })
-vlist(Column, 8)
+vlist(Column, 0).HorizontalAlignment = Enum.HorizontalAlignment.Right
 
 local WM = { Opts = { Fps = true, Ping = true, Time = true } }
 local wmFrame = new("Frame", {
-	Name = "Watermark", Size = UDim2.fromOffset(0, 24), AutomaticSize = Enum.AutomaticSize.X,
-	Skin = { BackgroundColor3 = "Section" }, LayoutOrder = 1, Parent = Column,
+	Name = "Watermark", AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 12),
+	Size = UDim2.fromOffset(0, 24), AutomaticSize = Enum.AutomaticSize.X,
+	Skin = { BackgroundColor3 = "Section" }, Parent = HUD,
 })
 stroke(wmFrame, "Border")
 new("Frame", { Size = UDim2.new(1, 0, 0, 2), Skin = { BackgroundColor3 = "Accent" }, ZIndex = 2, Parent = wmFrame })
@@ -2516,8 +2678,8 @@ buildWatermark()
 local KLW = 140
 local KL_TOP = 28
 local klFrame = new("Frame", {
-	Name = "KeybindList", Size = UDim2.fromOffset(KLW, KL_TOP + M.KLRow + 3), Skin = { BackgroundColor3 = "Section" },
-	LayoutOrder = 2, Parent = Column,
+	Name = "KeybindList", Position = UDim2.fromOffset(12, 12), Size = UDim2.fromOffset(KLW, KL_TOP + M.KLRow + 3),
+	Skin = { BackgroundColor3 = "Section" }, Parent = HUD,
 })
 stroke(klFrame, "Border")
 new("Frame", { Size = UDim2.new(1, 0, 0, 2), Skin = { BackgroundColor3 = "Accent" }, ZIndex = 2, Parent = klFrame })
@@ -2526,6 +2688,29 @@ new("TextLabel", {
 	TextXAlignment = Enum.TextXAlignment.Left, Parent = klFrame,
 })
 new("Frame", { Position = UDim2.fromOffset(0, 24), Size = UDim2.new(1, 0, 0, 1), Skin = { BackgroundColor3 = "Border" }, Parent = klFrame })
+local klGrab = new("TextButton", { Position = UDim2.fromOffset(0, 2), Size = UDim2.new(1, 0, 0, 22), ZIndex = 3, Parent = klFrame })
+klGrab.InputBegan:Connect(function(i)
+	if i.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+	local origin = Vector2.new(klFrame.Position.X.Offset, klFrame.Position.Y.Offset)
+	local start = mouse()
+	Library._dragEnd = function() Library:_touch() end
+	Library._drag = function(mp)
+		local v = viewport()
+		local x = math.clamp(origin.X + (mp.X - start.X), 0, math.max(0, v.X - klFrame.AbsoluteSize.X))
+		local y = math.clamp(origin.Y + (mp.Y - start.Y), 0, math.max(0, v.Y - klFrame.AbsoluteSize.Y))
+		klFrame.Position = UDim2.fromOffset(x, y)
+	end
+end)
+Library.Options.__keylist_pos = {
+	Type = "Position",
+	Serialize = function() return { x = klFrame.Position.X.Offset, y = klFrame.Position.Y.Offset } end,
+	Deserialize = function(_, d)
+		if type(d) == "table" and type(d.x) == "number" and type(d.y) == "number" then
+			local v = viewport()
+			klFrame.Position = UDim2.fromOffset(math.clamp(d.x, 0, math.max(0, v.X - 40)), math.clamp(d.y, 0, math.max(0, v.Y - 40)))
+		end
+	end,
+}
 local klRows = new("Frame", {
 	Position = UDim2.fromOffset(0, KL_TOP), Size = UDim2.new(1, 0, 1, -KL_TOP), BackgroundTransparency = 1,
 	ClipsDescendants = true, Parent = klFrame,
@@ -2586,9 +2771,9 @@ bind(klFrame, function() KL.Refresh() end)
 function Library:SetKeybindListVisible(v) klFrame.Visible = v end
 
 local notifHolder = new("Frame", {
-	Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY, BackgroundTransparency = 1, LayoutOrder = 3, Parent = Column,
+	Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY, BackgroundTransparency = 1, Parent = Column,
 })
-vlist(notifHolder, 0)
+vlist(notifHolder, 0).HorizontalAlignment = Enum.HorizontalAlignment.Right
 local notifCount = 0
 
 function Library:Notify(o, duration)
@@ -2602,7 +2787,7 @@ function Library:Notify(o, duration)
 
 	local wrap = new("Frame", { Size = UDim2.fromOffset(w + 2, 0), BackgroundTransparency = 1, LayoutOrder = notifCount, Parent = notifHolder })
 	local box = new("CanvasGroup", {
-		Position = UDim2.fromOffset(-(w + 30), 0), Size = UDim2.fromOffset(w + 2, h + 2), BackgroundTransparency = 1,
+		Position = UDim2.fromOffset(w + 30, 0), Size = UDim2.fromOffset(w + 2, h + 2), BackgroundTransparency = 1,
 		GroupTransparency = 1, Parent = wrap,
 	})
 	pad(box, 1, 1, 1, 1)
@@ -2624,7 +2809,7 @@ function Library:Notify(o, duration)
 	local function dismiss()
 		if dismissed then return end
 		dismissed = true
-		tween(box, { Position = UDim2.fromOffset(-(w + 30), 0), GroupTransparency = 1 }, 0.3, QUINT, IN)
+		tween(box, { Position = UDim2.fromOffset(w + 30, 0), GroupTransparency = 1 }, 0.3, QUINT, IN)
 		task.delay(0.28, function()
 			if not wrap.Parent then return end
 			wrap.ClipsDescendants = true
@@ -2646,7 +2831,7 @@ local function conn(c) table.insert(Library._conns, c) return c end
 conn(UIS.InputBegan:Connect(function(i, gp)
 	local t = i.UserInputType
 	if t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.MouseButton2 or t == Enum.UserInputType.Touch then
-		local mp = UIS:GetMouseLocation()
+		local mp = mouse()
 		for idx = #Popups, 1, -1 do
 			local p = Popups[idx]
 			if p then
@@ -2713,7 +2898,7 @@ end))
 
 conn(UIS.InputChanged:Connect(function(i)
 	if Library._drag and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
-		Library._drag(UIS:GetMouseLocation())
+		Library._drag(mouse())
 	end
 end))
 
@@ -3093,7 +3278,8 @@ local function buildPlayers(W)
 	local left = tab:AddSection("Players", "Left")
 	local right = tab:AddSection("Selected", "Right")
 
-	local slot = left:AddCustom(388)
+	local LIST_MAX = 388
+	local slot = left:AddCustom(M.Item + 2)
 	local sf = new("ScrollingFrame", {
 		Position = UDim2.fromOffset(1, 1), Size = UDim2.new(1, -2, 1, -2), Skin = { BackgroundColor3 = "Window" },
 		ScrollBarThickness = 0, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, Parent = slot,
@@ -3215,6 +3401,8 @@ local function buildPlayers(W)
 			b.MouseButton1Click:Connect(function() select(p) end)
 		end
 		sf.CanvasPosition = keep
+		local want = math.clamp(math.max(#list, 1) * M.Item + 2, M.Item + 2, LIST_MAX)
+		tween(slot, { Size = UDim2.new(1, 0, 0, want) }, 0.22, QUINT)
 		refreshSelected()
 	end
 
@@ -3472,8 +3660,12 @@ local function buildConfig(W)
 end
 
 Library._buildBuiltin = function(W)
-	buildPlayers(W)
-	local init = buildConfig(W)
+	local function has(name)
+		for _, t in ipairs(W.Tabs) do if t.Name == name then return true end end
+		return false
+	end
+	if not has("Players") then buildPlayers(W) end
+	local init = has("Config") and function() end or buildConfig(W)
 	task.defer(function()
 		if Library._unloaded then return end
 		Config:LoadAutoload()
