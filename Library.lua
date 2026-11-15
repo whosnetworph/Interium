@@ -78,6 +78,7 @@ local Library = {
 	Folder = "Interium",
 	MenuVisible = true,
 	Animations = true,
+	TabDetach = false,
 	Windows = {},
 	Builtin = Builtin,
 	CustomThemes = {},
@@ -1507,71 +1508,6 @@ function Elements:AddToggle(id, o)
 	function T:AddColorPicker(cid, co) return attachPicker(getHolder(), cid, co) end
 	function T:AddKeybind(kid, ko) ko = ko or {}; ko.Text = ko.Text or T.Text; return attachKeybind(getHolder(), kid, ko) end
 
-	function T:AddSettings(buildFn)
-		local gear = new("TextButton", {
-			Size = UDim2.fromOffset(14, 14), Text = "", LayoutOrder = 50, Parent = getHolder(),
-		})
-		-- gear icon: outer ring + hub
-		local ring = new("Frame", {
-			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-			Size = UDim2.fromOffset(10, 10), BackgroundTransparency = 1, Parent = gear,
-		})
-		new("UICorner", { CornerRadius = UDim.new(1, 0), Parent = ring })
-		local rs = new("UIStroke", { Thickness = 1.2, Color = Theme.TextDim, Parent = ring })
-		local hub = new("Frame", {
-			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-			Size = UDim2.fromOffset(3, 3), BackgroundColor3 = Theme.TextDim, Parent = ring,
-		})
-		new("UICorner", { CornerRadius = UDim.new(1, 0), Parent = hub })
-		bind(gear, function()
-			rs.Color = Theme.TextDim
-			hub.BackgroundColor3 = Theme.TextDim
-		end)
-		gear.MouseEnter:Connect(function()
-			tween(rs, { Color = Theme.Text }, 0.12, QUAD)
-			tween(hub, { BackgroundColor3 = Theme.Text }, 0.12, QUAD)
-		end)
-		gear.MouseLeave:Connect(function()
-			tween(rs, { Color = Theme.TextDim }, 0.15, QUAD)
-			tween(hub, { BackgroundColor3 = Theme.TextDim }, 0.15, QUAD)
-		end)
-
-		local pop, panel
-		local function closeSettings()
-			if pop and isOpen(pop) then closePopup(pop) end
-		end
-		gear.MouseButton1Click:Connect(function()
-			if pop and isOpen(pop) then closeSettings() return end
-			if not pop then
-				pop, panel = newPopup(200, 8)
-				local content = new("Frame", {
-					Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Parent = panel,
-				})
-				pad(content, 8, 8, 8, 8)
-				vlist(content, M.Gap)
-				local c = makeContainer(content, self.Tab, pop)
-				if type(buildFn) == "function" then
-					buildFn(c, T)
-				end
-				task.defer(function()
-					local h = 16
-					for _, ch in ipairs(content:GetChildren()) do
-						if ch:IsA("GuiObject") and not ch:IsA("UIListLayout") and not ch:IsA("UIPadding") then
-							h = h + ch.AbsoluteSize.Y + M.Gap
-						end
-					end
-					resizePopup(pop, 200, math.max(40, h), false)
-				end)
-			end
-			openPopup(pop, gear, { Align = "right", Gap = 4 })
-		end)
-		return { Close = closeSettings, Gear = gear }
-	end
-
-	if o.Settings then
-		T:AddSettings(o.Settings)
-	end
-
 	return finish(self, T, id, o, row, T.Text)
 end
 
@@ -1818,15 +1754,15 @@ function Elements:AddESPPreview(o)
 	vp.Position = UDim2.fromOffset(1, 1)
 	vp.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
 	vp.BorderSizePixel = 0
-	vp.Ambient = Color3.fromRGB(200, 200, 210)
+	vp.Ambient = Color3.fromRGB(210, 210, 220)
 	vp.LightColor = Color3.fromRGB(255, 255, 255)
-	vp.LightDirection = Vector3.new(-0.5, -1, -0.4)
+	vp.LightDirection = Vector3.new(-0.4, -1, -0.6)
 	vp.Parent = slot
 
 	local world = Instance.new("WorldModel")
 	world.Parent = vp
 	local cam = Instance.new("Camera")
-	cam.FieldOfView = 28
+	cam.FieldOfView = 40
 	cam.Parent = vp
 	vp.CurrentCamera = cam
 
@@ -1834,39 +1770,50 @@ function Elements:AddESPPreview(o)
 	model.Name = "AvatarPreview"
 	model.Parent = world
 
-	local bases = {}
 	local bones = {}
-	local pivot = CFrame.new()
 	local ready = false
+	local basePivot = CFrame.new()
 	local displayName = o.Name or (LocalPlayer and LocalPlayer.DisplayName) or "LocalPlayer"
 
-	local function captureBases(m)
-		bases = {}
-		for _, p in ipairs(m:GetDescendants()) do
-			if p:IsA("BasePart") then
-				bases[p] = p.CFrame
+	local function setupModel(m)
+		for _, d in ipairs(m:GetDescendants()) do
+			if d:IsA("BasePart") then
+				d.Anchored = true
+				d.CanCollide = false
+				d.CastShadow = false
+			elseif d:IsA("Script") or d:IsA("LocalScript") then
+				d.Disabled = true
 			end
 		end
-		local root = m:FindFirstChild("HumanoidRootPart") or m:FindFirstChild("Torso") or m.PrimaryPart
-		if root then
-			pivot = root.CFrame
-		else
-			local ok, cf = pcall(function() return m:GetBoundingBox() end)
-			if ok and typeof(cf) == "CFrame" then pivot = cf end
+		local hum = m:FindFirstChildOfClass("Humanoid")
+		if hum then
+			hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+			pcall(function()
+				hum.EvaluateStateMachine = false
+			end)
 		end
+		-- keep accessories welded; center whole model via PivotTo
+		local ok, bbCF = pcall(function()
+			local c = m:GetBoundingBox()
+			return c
+		end)
+		if ok and bbCF then
+			m:PivotTo(m:GetPivot() - bbCF.Position)
+		end
+		basePivot = m:GetPivot()
 		bones = {}
 		local function part(n)
 			return m:FindFirstChild(n, true)
 		end
 		local pairsList = {
-			{ "Head", "Torso" }, { "Head", "UpperTorso" },
-			{ "Torso", "Left Arm" }, { "Torso", "Right Arm" },
-			{ "Torso", "Left Leg" }, { "Torso", "Right Leg" },
+			{ "Head", "UpperTorso" }, { "Head", "Torso" },
 			{ "UpperTorso", "LowerTorso" },
 			{ "UpperTorso", "LeftUpperArm" }, { "LeftUpperArm", "LeftLowerArm" }, { "LeftLowerArm", "LeftHand" },
 			{ "UpperTorso", "RightUpperArm" }, { "RightUpperArm", "RightLowerArm" }, { "RightLowerArm", "RightHand" },
 			{ "LowerTorso", "LeftUpperLeg" }, { "LeftUpperLeg", "LeftLowerLeg" }, { "LeftLowerLeg", "LeftFoot" },
 			{ "LowerTorso", "RightUpperLeg" }, { "RightUpperLeg", "RightLowerLeg" }, { "RightLowerLeg", "RightFoot" },
+			{ "Torso", "Left Arm" }, { "Torso", "Right Arm" },
+			{ "Torso", "Left Leg" }, { "Torso", "Right Leg" },
 		}
 		for _, pr in ipairs(pairsList) do
 			local a, b = part(pr[1]), part(pr[2])
@@ -1874,6 +1821,7 @@ function Elements:AddESPPreview(o)
 				bones[#bones + 1] = { a, b }
 			end
 		end
+		ready = true
 	end
 
 	local function fallbackR6()
@@ -1900,8 +1848,8 @@ function Elements:AddESPPreview(o)
 		face.Face = Enum.NormalId.Front
 		face.Texture = "rbxasset://textures/face.png"
 		face.Parent = head
-		captureBases(model)
-		ready = true
+		model.PrimaryPart = model:FindFirstChild("Torso")
+		setupModel(model)
 	end
 
 	task.spawn(function()
@@ -1923,45 +1871,14 @@ function Elements:AddESPPreview(o)
 			result.Parent = world
 			model:Destroy()
 			model = result
-			for _, d in ipairs(model:GetDescendants()) do
-				if d:IsA("BasePart") then
-					d.Anchored = true
-					d.CanCollide = false
-				elseif d:IsA("Script") or d:IsA("LocalScript") then
-					d.Disabled = true
-				end
-			end
-			local hum = model:FindFirstChildOfClass("Humanoid")
-			if hum then
-				hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
-				pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
-			end
-			local root = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
-			if root then
-				local bbCF, bbSize = model:GetBoundingBox()
-				local offset = root.Position - bbCF.Position
-				for _, part in ipairs(model:GetDescendants()) do
-					if part:IsA("BasePart") then
-						part.CFrame = CFrame.new(-offset) * (part.CFrame - root.Position) * CFrame.new(root.Position)
-					end
-				end
-				-- center at origin
-				local cf2, size2 = model:GetBoundingBox()
-				local delta = -cf2.Position
-				for _, part in ipairs(model:GetDescendants()) do
-					if part:IsA("BasePart") then
-						part.CFrame = part.CFrame + delta
-					end
-				end
-			end
-			captureBases(model)
-			ready = true
+			setupModel(model)
 		else
 			fallbackR6()
 		end
 	end)
 
-	cam.CFrame = CFrame.new(Vector3.new(0, 1.5, 9.5), Vector3.new(0, 1.2, 0))
+	-- camera farther so character is smaller in the same frame
+	cam.CFrame = CFrame.new(Vector3.new(0, 1.4, 14), Vector3.new(0, 1.2, 0))
 
 	local overlay = new("Frame", {
 		Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ClipsDescendants = true, ZIndex = 5, Parent = slot,
@@ -1998,27 +1915,22 @@ function Elements:AddESPPreview(o)
 	local angle = 0
 	local conn = RunService.RenderStepped:Connect(function(dt)
 		if Library._unloaded or not slot.Parent then return end
-		if not ready then return end
-		angle = (angle + dt * 0.45) % (math.pi * 2)
-		local rot = CFrame.Angles(0, angle, 0)
-		for part, base in pairs(bases) do
-			if part.Parent then
-				part.CFrame = rot * base
-			end
-		end
+		if not ready or not model.Parent then return end
+		angle = (angle + dt * 0.4) % (math.pi * 2)
+		-- spin whole model (accessories stay attached)
+		model:PivotTo(CFrame.Angles(0, angle, 0) * (basePivot - basePivot.Position))
 
 		local vs = vp.AbsoluteSize
 		if vs.X < 2 or vs.Y < 2 then return end
 
-		-- auto-frame camera to model bounds
 		local okb, bbCF, bbSize = pcall(function()
 			local c, sz = model:GetBoundingBox()
 			return c, sz
 		end)
-		if okb and bbCF then
-			local dist = math.max(bbSize.X, bbSize.Y, bbSize.Z) * 1.35
-			dist = math.clamp(dist, 6, 14)
-			cam.CFrame = CFrame.new(bbCF.Position + Vector3.new(0, bbSize.Y * 0.05, dist), bbCF.Position)
+		if okb and bbCF and bbSize then
+			local dist = math.max(bbSize.X, bbSize.Y, bbSize.Z) * 2.4
+			dist = math.clamp(dist, 11, 18)
+			cam.CFrame = CFrame.new(bbCF.Position + Vector3.new(0, bbSize.Y * 0.02, dist), bbCF.Position)
 		end
 
 		local function project(worldPos)
@@ -2030,15 +1942,13 @@ function Elements:AddESPPreview(o)
 			local sx = sy / aspect
 			local ndcX = (rel.X * sx) / -rel.Z
 			local ndcY = (rel.Y * sy) / -rel.Z
-			local px = (ndcX * 0.5 + 0.5) * vs.X
-			local py = (0.5 - ndcY * 0.5) * vs.Y
-			return Vector2.new(px, py)
+			return Vector2.new((ndcX * 0.5 + 0.5) * vs.X, (0.5 - ndcY * 0.5) * vs.Y)
 		end
 
 		local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
 		local any = false
-		for part in pairs(bases) do
-			if part.Parent then
+		for _, part in ipairs(model:GetDescendants()) do
+			if part:IsA("BasePart") and not part:FindFirstAncestorOfClass("Accessory") then
 				for _, c in ipairs({
 					Vector3.new(-1, -1, -1), Vector3.new(-1, -1, 1), Vector3.new(-1, 1, -1), Vector3.new(-1, 1, 1),
 					Vector3.new(1, -1, -1), Vector3.new(1, -1, 1), Vector3.new(1, 1, -1), Vector3.new(1, 1, 1),
@@ -2539,6 +2449,7 @@ function Library:CreateWindow(o)
 			btn.InputBegan:Connect(function(i)
 				if i.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
 				if t.Detached then return end
+				if not Library.TabDetach then return end
 				calibrate(btn, i)
 				local start = mouse()
 				local ap = btn.AbsolutePosition
@@ -3753,6 +3664,11 @@ local function buildConfig(W)
 	menu:AddToggle("__watermark", { Text = "Watermark", Default = true, Callback = function(v) Library:SetWatermarkVisible(v) end })
 	menu:AddToggle("__keylist", { Text = "Keybind list", Default = true, Callback = function(v) Library:SetKeybindListVisible(v) end })
 	menu:AddToggle("__animations", { Text = "Animations", Default = true, Callback = function(v) Library.Animations = v end })
+	menu:AddToggle("__tab_detach", {
+		Text = "Detachable tabs",
+		Default = false,
+		Callback = function(v) Library.TabDetach = v == true end,
+	})
 	menu:AddButton({ Text = "Unload", Accent = true, Callback = function() Library:Unload() end })
 
 	local themeDD
