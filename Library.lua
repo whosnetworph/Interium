@@ -542,13 +542,45 @@ local function tabBar(parent, size, padding, opts)
 		ZIndex = 3, Visible = false, Skin = { BackgroundColor3 = "Accent" }, Parent = parent,
 	})
 
+	function B:Relayout()
+		local x = 0
+		for n, o in pairs(B.Tabs) do
+			if o.Btn and o.Btn.Parent then
+				o.X = x
+				o.W = math.ceil(textW(n, size)) + padding * 2
+				o.Btn.Position = UDim2.fromOffset(x, 0)
+				o.Btn.Size = UDim2.new(0, o.W, 1, 0)
+				x = x + o.W
+			end
+		end
+		B.Width = x
+		if opts.OnWidth then opts.OnWidth(B.Width) end
+		if B.Active and B.Tabs[B.Active] then
+			local t = B.Tabs[B.Active]
+			ul.Position = UDim2.new(0, t.X, 1, 0)
+			ul.Size = UDim2.new(0, t.W, 0, 2)
+		end
+	end
+
+	function B:Remove(str)
+		local t = B.Tabs[str]
+		if not t then return end
+		if t.Btn then t.Btn:Destroy() end
+		B.Tabs[str] = nil
+		if B.Active == str then
+			B.Active = nil
+			ul.Visible = false
+		end
+		B:Relayout()
+	end
+
 	function B:Add(str, onClick)
 		local w = math.ceil(textW(str, size)) + padding * 2
 		local b = new("TextButton", {
 			Position = UDim2.fromOffset(B.Width, 0), Size = UDim2.new(0, w, 1, 0), Text = str,
 			TextSize = size, TextColor3 = Theme.TextDim, Parent = parent,
 		})
-		B.Tabs[str] = { Btn = b, X = B.Width, W = w }
+		B.Tabs[str] = { Btn = b, X = B.Width, W = w, OnClick = onClick }
 		B.Width = B.Width + w
 		if opts.OnWidth then opts.OnWidth(B.Width) end
 		b.MouseEnter:Connect(function()
@@ -1613,6 +1645,197 @@ function Elements:AddLabel(str, right)
 	return L
 end
 
+
+function Elements:AddESPPreview(o)
+	o = o or {}
+	local height = o.Height or 220
+	local slot = new("Frame", {
+		Size = UDim2.new(1, 0, 0, height), Skin = { BackgroundColor3 = "Window" }, Parent = self.Content,
+	})
+	stroke(slot, "Border")
+	local vp = Instance.new("ViewportFrame")
+	vp.Size = UDim2.new(1, -2, 1, -2)
+	vp.Position = UDim2.fromOffset(1, 1)
+	vp.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+	vp.BorderSizePixel = 0
+	vp.Parent = slot
+
+	local world = Instance.new("WorldModel")
+	world.Parent = vp
+	local cam = Instance.new("Camera")
+	cam.FieldOfView = 40
+	cam.Parent = vp
+	vp.CurrentCamera = cam
+
+	local root = Instance.new("Model")
+	root.Name = "Preview"
+	root.Parent = world
+
+	local function part(name, size, cf, color)
+		local p = Instance.new("Part")
+		p.Name = name
+		p.Size = size
+		p.CFrame = cf
+		p.Anchored = true
+		p.CanCollide = false
+		p.Material = Enum.Material.SmoothPlastic
+		p.Color = color or Color3.fromRGB(180, 180, 190)
+		p.Parent = root
+		return p
+	end
+
+	local torso = part("UpperTorso", Vector3.new(1.6, 1.6, 0.8), CFrame.new(0, 2.2, 0), Color3.fromRGB(70, 130, 200))
+	local lower = part("LowerTorso", Vector3.new(1.4, 0.7, 0.7), CFrame.new(0, 1.35, 0), Color3.fromRGB(60, 110, 180))
+	local head = part("Head", Vector3.new(1.1, 1.1, 1.1), CFrame.new(0, 3.35, 0), Color3.fromRGB(230, 190, 150))
+	local lua = part("LeftUpperArm", Vector3.new(0.55, 1.2, 0.55), CFrame.new(-1.2, 2.3, 0), Color3.fromRGB(70, 130, 200))
+	local lla = part("LeftLowerArm", Vector3.new(0.5, 1.0, 0.5), CFrame.new(-1.2, 1.25, 0), Color3.fromRGB(230, 190, 150))
+	local rua = part("RightUpperArm", Vector3.new(0.55, 1.2, 0.55), CFrame.new(1.2, 2.3, 0), Color3.fromRGB(70, 130, 200))
+	local rla = part("RightLowerArm", Vector3.new(0.5, 1.0, 0.5), CFrame.new(1.2, 1.25, 0), Color3.fromRGB(230, 190, 150))
+	local lul = part("LeftUpperLeg", Vector3.new(0.6, 1.2, 0.6), CFrame.new(-0.4, 0.55, 0), Color3.fromRGB(50, 55, 70))
+	local lll = part("LeftLowerLeg", Vector3.new(0.55, 1.1, 0.55), CFrame.new(-0.4, -0.55, 0), Color3.fromRGB(50, 55, 70))
+	local rul = part("RightUpperLeg", Vector3.new(0.6, 1.2, 0.6), CFrame.new(0.4, 0.55, 0), Color3.fromRGB(50, 55, 70))
+	local rll = part("RightLowerLeg", Vector3.new(0.55, 1.1, 0.55), CFrame.new(0.4, -0.55, 0), Color3.fromRGB(50, 55, 70))
+
+	local bases = {}
+	for _, p in ipairs(root:GetChildren()) do
+		if p:IsA("BasePart") then bases[p] = p.CFrame end
+	end
+	local bones = {
+		{ head, torso }, { torso, lower },
+		{ torso, lua }, { lua, lla },
+		{ torso, rua }, { rua, rla },
+		{ lower, lul }, { lul, lll },
+		{ lower, rul }, { rul, rll },
+	}
+
+	cam.CFrame = CFrame.new(Vector3.new(0, 2.0, 7.2), Vector3.new(0, 2.0, 0))
+
+	local overlay = new("Frame", {
+		Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 5, Parent = slot,
+	})
+	local box = new("Frame", { BackgroundTransparency = 1, Visible = false, Parent = overlay })
+	local boxStroke = stroke(box, "Accent", 1)
+	local nameLbl = new("TextLabel", {
+		Size = UDim2.fromOffset(120, 14), Text = o.Name or "Enemy", TextSize = 12,
+		TextXAlignment = Enum.TextXAlignment.Center, Visible = false, Parent = overlay,
+	})
+	local hpBg = new("Frame", {
+		Size = UDim2.fromOffset(4, 60), BackgroundColor3 = Color3.fromRGB(30, 30, 34), Visible = false, Parent = overlay,
+	})
+	stroke(hpBg, "BorderDark")
+	local hpFill = new("Frame", {
+		AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.fromScale(1, 0.72),
+		Skin = { BackgroundColor3 = "Accent" }, Parent = hpBg,
+	})
+	local skLines = {}
+	for i = 1, #bones do
+		skLines[i] = new("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(1, 1),
+			BackgroundColor3 = Theme.Accent, BorderSizePixel = 0, Visible = false, Parent = overlay,
+		})
+	end
+
+	local flags = o.Flags or {
+		Box = "esp_box", Name = "esp_name", Health = "esp_health",
+		Skeleton = "esp_skeleton", Color = "esp_color",
+	}
+
+	local angle = 0
+	local conn = RunService.RenderStepped:Connect(function(dt)
+		if Library._unloaded or not slot.Parent then return end
+		angle = (angle + dt * 0.55) % (math.pi * 2)
+		local rot = CFrame.Angles(0, angle, 0)
+		for p, base in pairs(bases) do
+			p.CFrame = rot * base
+		end
+
+		local function project(worldPos)
+			local rel = cam.CFrame:PointToObjectSpace(worldPos)
+			if rel.Z >= -0.05 then return nil end
+			local aspect = vp.AbsoluteSize.X / math.max(vp.AbsoluteSize.Y, 1)
+			local fov = math.rad(cam.FieldOfView)
+			local sy = 1 / math.tan(fov * 0.5)
+			local sx = sy / aspect
+			local ndcX = (rel.X * sx) / -rel.Z
+			local ndcY = (rel.Y * sy) / -rel.Z
+			return Vector2.new((ndcX * 0.5 + 0.5) * vp.AbsoluteSize.X, (0.5 - ndcY * 0.5) * vp.AbsoluteSize.Y)
+		end
+
+		local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
+		local any = false
+		for p in pairs(bases) do
+			local corners = {
+				Vector3.new(-1, -1, -1), Vector3.new(-1, -1, 1), Vector3.new(-1, 1, -1), Vector3.new(-1, 1, 1),
+				Vector3.new(1, -1, -1), Vector3.new(1, -1, 1), Vector3.new(1, 1, -1), Vector3.new(1, 1, 1),
+			}
+			for _, c in ipairs(corners) do
+				local sp = project((p.CFrame * CFrame.new(c * p.Size * 0.5)).Position)
+				if sp then
+					any = true
+					minX = math.min(minX, sp.X); minY = math.min(minY, sp.Y)
+					maxX = math.max(maxX, sp.X); maxY = math.max(maxY, sp.Y)
+				end
+			end
+		end
+
+		local col = Theme.Accent
+		local cFlag = Library.Flags[flags.Color]
+		if typeof(cFlag) == "Color3" then col = cFlag end
+		local showBox = Library.Flags[flags.Box] == true
+		local showName = Library.Flags[flags.Name] == true
+		local showHp = Library.Flags[flags.Health] == true
+		local showSk = Library.Flags[flags.Skeleton] == true
+
+		if showBox and any then
+			box.Visible = true
+			box.Position = UDim2.fromOffset(math.floor(minX), math.floor(minY))
+			box.Size = UDim2.fromOffset(math.max(1, math.floor(maxX - minX)), math.max(1, math.floor(maxY - minY)))
+			boxStroke.Color = col
+		else
+			box.Visible = false
+		end
+		if showName and any then
+			nameLbl.Visible = true
+			nameLbl.TextColor3 = col
+			nameLbl.Position = UDim2.fromOffset(math.floor((minX + maxX) * 0.5 - 60), math.floor(minY - 16))
+		else
+			nameLbl.Visible = false
+		end
+		if showHp and any then
+			hpBg.Visible = true
+			local h = math.max(20, maxY - minY)
+			hpBg.Size = UDim2.fromOffset(3, math.floor(h))
+			hpBg.Position = UDim2.fromOffset(math.floor(minX - 6), math.floor(minY))
+			hpFill.BackgroundColor3 = col
+		else
+			hpBg.Visible = false
+		end
+		if showSk then
+			for i, pair in ipairs(bones) do
+				local a = project(pair[1].Position)
+				local b = project(pair[2].Position)
+				local ln = skLines[i]
+				if a and b then
+					local mid = (a + b) * 0.5
+					local delta = b - a
+					ln.Visible = true
+					ln.BackgroundColor3 = col
+					ln.Position = UDim2.fromOffset(mid.X, mid.Y)
+					ln.Size = UDim2.fromOffset(math.max(1, delta.Magnitude), 1)
+					ln.Rotation = math.deg(math.atan2(delta.Y, delta.X))
+				else
+					ln.Visible = false
+				end
+			end
+		else
+			for _, ln in ipairs(skLines) do ln.Visible = false end
+		end
+	end)
+	table.insert(Library._conns, conn)
+	self:_reg(o.Text or "ESP Preview", slot)
+	return slot
+end
+
 function Elements:AddDivider()
 	return new("Frame", { Size = UDim2.new(1, 0, 0, 1), Skin = { BackgroundColor3 = "Border" }, Parent = self.Content })
 end
@@ -1852,8 +2075,10 @@ function Library:CreateWindow(o)
 	end
 
 	function W:AddTab(name)
-		local tab = setmetatable({ Name = name, Count = { Left = 0, Right = 0 } }, TabMethods)
-		tabsBar:Add(name, function() W:SelectTab(tab) end)
+		local tab = setmetatable({ Name = name, Count = { Left = 0, Right = 0 }, Detached = false }, TabMethods)
+		local tabBtn = tabsBar:Add(name, function()
+			if not tab.Detached then W:SelectTab(tab) end
+		end)
 		local page = new("CanvasGroup", {
 			Position = UDim2.fromOffset(PG, PG), Size = UDim2.new(1, -PG * 2, 1, -PG * 2), BackgroundTransparency = 1,
 			Visible = false, GroupTransparency = 1, Parent = body,
@@ -1864,12 +2089,157 @@ function Library:CreateWindow(o)
 			Parent = page,
 		})
 		pad(scroll, 1, 1, 1, 1)
-		tab.Page, tab.Scroll = page, scroll
+		tab.Page, tab.Scroll, tab.Btn = page, scroll, tabBtn
 		local half = M.ColGap / 2
 		tab.LeftCol = new("Frame", { Size = UDim2.new(0.5, -half, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Parent = scroll })
 		tab.RightCol = new("Frame", { Position = UDim2.new(0.5, half, 0, 0), Size = UDim2.new(0.5, -half, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Parent = scroll })
 		vlist(tab.LeftCol, M.ColGap)
 		vlist(tab.RightCol, M.ColGap)
+
+		local detachWin, detachHead
+		local dropOverlay = new("Frame", {
+			Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Visible = false, ZIndex = 50, Parent = frame,
+		})
+		local dropTint = new("Frame", {
+			Size = UDim2.fromScale(1, 1), BackgroundTransparency = 0.55, Skin = { BackgroundColor3 = "Accent" }, Parent = dropOverlay,
+		})
+		new("TextLabel", {
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(180, 24),
+			Text = "Drop to reattach", TextSize = Theme.TitleSize, Parent = dropOverlay,
+		})
+
+		local function destroyDetach()
+			if detachWin then
+				detachWin:Destroy()
+				detachWin = nil
+				detachHead = nil
+			end
+		end
+
+		function tab:Reattach()
+			if not tab.Detached then return end
+			tab.Detached = false
+			destroyDetach()
+			dropOverlay.Visible = false
+			page.Parent = body
+			page.Size = UDim2.new(1, -PG * 2, 1, -PG * 2)
+			page.Position = UDim2.fromOffset(PG, PG)
+			tabsBar:Add(name, function()
+				if not tab.Detached then W:SelectTab(tab) end
+			end)
+			tab.Btn = tabsBar.Tabs[name] and tabsBar.Tabs[name].Btn
+			W:wireTabDrag(tab)
+			if not W.Active or W.Active.Detached then
+				W:SelectTab(tab, true)
+			else
+				page.Visible = false
+				page.GroupTransparency = 1
+			end
+		end
+
+		function tab:Detach(at)
+			if tab.Detached then return end
+			tab.Detached = true
+			if W.Active == tab then
+				local other
+				for _, t in ipairs(W.Tabs) do
+					if t ~= tab and not t.Detached then other = t break end
+				end
+				W.Active = nil
+				if other then W:SelectTab(other, true) else page.Visible = false end
+			end
+			tabsBar:Remove(name)
+			tab.Btn = nil
+
+			local dw = math.floor(frame.AbsoluteSize.X * 0.55)
+			local dh = math.floor(frame.AbsoluteSize.Y * 0.7)
+			local mp = at or UIS:GetMouseLocation()
+			detachWin = new("Frame", {
+				Name = "Detached_" .. name,
+				Size = UDim2.fromOffset(dw + 2, dh + 2),
+				Position = UDim2.fromOffset(math.floor(mp.X - dw / 2), math.floor(mp.Y - 14)),
+				Skin = { BackgroundColor3 = "Window" }, Active = true, Parent = Gui,
+			})
+			stroke(detachWin, "Border")
+			local dInner = new("Frame", {
+				Position = UDim2.fromOffset(1, 1), Size = UDim2.new(1, -2, 1, -2), Skin = { BackgroundColor3 = "Window" }, Parent = detachWin,
+			})
+			stroke(dInner, "BorderDark")
+			detachHead = new("Frame", { Size = UDim2.new(1, 0, 0, M.Header), Skin = { BackgroundColor3 = "Section" }, Parent = dInner })
+			new("Frame", { Position = UDim2.new(0, 0, 1, -1), Size = UDim2.new(1, 0, 0, 1), Skin = { BackgroundColor3 = "Border" }, Parent = detachHead })
+			local dhl = new("Frame", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Parent = detachHead })
+			hlist(dhl, 0)
+			pad(dhl, M.Page, 0, 0, 0)
+			new("TextLabel", {
+				AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.fromOffset(0, 14), Text = name, TextSize = Theme.TitleSize, Parent = dhl,
+			})
+			local closeBtn = new("TextButton", {
+				AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0), Size = UDim2.fromOffset(18, 18),
+				Text = "x", TextSize = 12, Skin = { TextColor3 = "TextDim" }, Parent = detachHead,
+			})
+			closeBtn.MouseButton1Click:Connect(function() tab:Reattach() end)
+
+			local dBody = new("Frame", {
+				Position = UDim2.fromOffset(0, M.Header), Size = UDim2.new(1, 0, 1, -M.Header),
+				BackgroundTransparency = 1, ClipsDescendants = true, Parent = dInner,
+			})
+			page.Parent = dBody
+			page.Position = UDim2.fromOffset(PG, PG)
+			page.Size = UDim2.new(1, -PG * 2, 1, -PG * 2)
+			page.Visible = true
+			page.GroupTransparency = 0
+
+			detachHead.InputBegan:Connect(function(i)
+				if i.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+				local origin = Vector2.new(detachWin.Position.X.Offset, detachWin.Position.Y.Offset)
+				local start = UIS:GetMouseLocation()
+				Library._dragEnd = function()
+					dropOverlay.Visible = false
+					if inside(frame, UIS:GetMouseLocation()) then
+						tab:Reattach()
+					end
+				end
+				Library._drag = function(mp2)
+					local v = viewport()
+					local x = math.clamp(origin.X + (mp2.X - start.X), 0, v.X - 40)
+					local y = math.clamp(origin.Y + (mp2.Y - start.Y), 0, v.Y - 30)
+					detachWin.Position = UDim2.fromOffset(x, y)
+					dropOverlay.Visible = inside(frame, mp2)
+				end
+			end)
+			tab.DetachWin = detachWin
+		end
+
+		function W:wireTabDrag(t)
+			local btn = t.Btn
+			if not btn then return end
+			local press, startPos, armed
+			btn.InputBegan:Connect(function(i)
+				if i.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+				if t.Detached then return end
+				press = true
+				armed = false
+				startPos = UIS:GetMouseLocation()
+				Library._dragEnd = function()
+					press = false
+					dropOverlay.Visible = false
+					if armed and not inside(frame, UIS:GetMouseLocation()) then
+						t:Detach(UIS:GetMouseLocation())
+					end
+					armed = false
+				end
+				Library._drag = function(mp)
+					if not press or t.Detached then return end
+					local d = (mp - startPos).Magnitude
+					if d > 12 then
+						armed = true
+						dropOverlay.Visible = false
+					end
+				end
+			end)
+		end
+
+		W:wireTabDrag(tab)
 		table.insert(W.Tabs, tab)
 		if #W.Tabs == 1 then W:SelectTab(tab, true) end
 		return tab
