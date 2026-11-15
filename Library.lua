@@ -576,10 +576,15 @@ local function tabBar(parent, size, padding, opts)
 		for n, o in pairs(B.Tabs) do
 			if o.Btn and o.Btn.Parent then order[#order + 1] = { n, o } end
 		end
-		table.sort(order, function(a, b) return a[2].X < b[2].X end)
+		table.sort(order, function(a, b)
+			local ia, ib = a[2].Order or 0, b[2].Order or 0
+			if ia == ib then return (a[2].X or 0) < (b[2].X or 0) end
+			return ia < ib
+		end)
 		local x = 0
-		for _, e in ipairs(order) do
+		for i, e in ipairs(order) do
 			local n, o = e[1], e[2]
+			o.Order = i
 			o.W = math.ceil(textW(n, size)) + padding * 2
 			o.X = x
 			o.Btn.Position = UDim2.fromOffset(x, 0)
@@ -607,16 +612,27 @@ local function tabBar(parent, size, padding, opts)
 		B:Relayout()
 	end
 
-	function B:Add(str, onClick)
+	function B:Add(str, onClick, atOrder)
 		if B.Tabs[str] then return B.Tabs[str].Btn end
 		local w = math.ceil(textW(str, size)) + padding * 2
 		local b = new("TextButton", {
 			Position = UDim2.fromOffset(B.Width, 0), Size = UDim2.new(0, w, 1, 0), Text = str,
 			TextSize = size, TextColor3 = Theme.TextDim, Parent = parent,
 		})
-		B.Tabs[str] = { Btn = b, X = B.Width, W = w, OnClick = onClick }
-		B.Width = B.Width + w
-		if opts.OnWidth then opts.OnWidth(B.Width) end
+		local ord = atOrder
+		if not ord then
+			ord = 0
+			for _, o in pairs(B.Tabs) do
+				if (o.Order or 0) > ord then ord = o.Order end
+			end
+			ord = ord + 1
+		else
+			for _, o in pairs(B.Tabs) do
+				if (o.Order or 0) >= ord then o.Order = (o.Order or 0) + 1 end
+			end
+		end
+		B.Tabs[str] = { Btn = b, X = B.Width, W = w, OnClick = onClick, Order = ord }
+		B:Relayout()
 		b.MouseEnter:Connect(function()
 			if B.Active ~= str then tween(b, { TextColor3 = Theme.TextHover }, 0.1, QUAD) end
 		end)
@@ -1491,6 +1507,71 @@ function Elements:AddToggle(id, o)
 	function T:AddColorPicker(cid, co) return attachPicker(getHolder(), cid, co) end
 	function T:AddKeybind(kid, ko) ko = ko or {}; ko.Text = ko.Text or T.Text; return attachKeybind(getHolder(), kid, ko) end
 
+	function T:AddSettings(buildFn)
+		local gear = new("TextButton", {
+			Size = UDim2.fromOffset(14, 14), Text = "", LayoutOrder = 50, Parent = getHolder(),
+		})
+		-- gear icon: outer ring + hub
+		local ring = new("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromOffset(10, 10), BackgroundTransparency = 1, Parent = gear,
+		})
+		new("UICorner", { CornerRadius = UDim.new(1, 0), Parent = ring })
+		local rs = new("UIStroke", { Thickness = 1.2, Color = Theme.TextDim, Parent = ring })
+		local hub = new("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromOffset(3, 3), BackgroundColor3 = Theme.TextDim, Parent = ring,
+		})
+		new("UICorner", { CornerRadius = UDim.new(1, 0), Parent = hub })
+		bind(gear, function()
+			rs.Color = Theme.TextDim
+			hub.BackgroundColor3 = Theme.TextDim
+		end)
+		gear.MouseEnter:Connect(function()
+			tween(rs, { Color = Theme.Text }, 0.12, QUAD)
+			tween(hub, { BackgroundColor3 = Theme.Text }, 0.12, QUAD)
+		end)
+		gear.MouseLeave:Connect(function()
+			tween(rs, { Color = Theme.TextDim }, 0.15, QUAD)
+			tween(hub, { BackgroundColor3 = Theme.TextDim }, 0.15, QUAD)
+		end)
+
+		local pop, panel
+		local function closeSettings()
+			if pop and isOpen(pop) then closePopup(pop) end
+		end
+		gear.MouseButton1Click:Connect(function()
+			if pop and isOpen(pop) then closeSettings() return end
+			if not pop then
+				pop, panel = newPopup(200, 8)
+				local content = new("Frame", {
+					Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Parent = panel,
+				})
+				pad(content, 8, 8, 8, 8)
+				vlist(content, M.Gap)
+				local c = makeContainer(content, self.Tab, pop)
+				if type(buildFn) == "function" then
+					buildFn(c, T)
+				end
+				task.defer(function()
+					local h = 16
+					for _, ch in ipairs(content:GetChildren()) do
+						if ch:IsA("GuiObject") and not ch:IsA("UIListLayout") and not ch:IsA("UIPadding") then
+							h = h + ch.AbsoluteSize.Y + M.Gap
+						end
+					end
+					resizePopup(pop, 200, math.max(40, h), false)
+				end)
+			end
+			openPopup(pop, gear, { Align = "right", Gap = 4 })
+		end)
+		return { Close = closeSettings, Gear = gear }
+	end
+
+	if o.Settings then
+		T:AddSettings(o.Settings)
+	end
+
 	return finish(self, T, id, o, row, T.Text)
 end
 
@@ -1724,7 +1805,7 @@ end
 
 function Elements:AddESPPreview(o)
 	o = o or {}
-	local height = o.Height or 240
+	local height = o.Height or 280
 	local slot = new("Frame", {
 		Size = UDim2.new(1, 0, 0, height), Skin = { BackgroundColor3 = "Window" },
 		ClipsDescendants = true, Parent = self.Content,
@@ -1735,67 +1816,152 @@ function Elements:AddESPPreview(o)
 	vp.Name = "ESPPreview"
 	vp.Size = UDim2.new(1, -2, 1, -2)
 	vp.Position = UDim2.fromOffset(1, 1)
-	vp.BackgroundColor3 = Color3.fromRGB(16, 16, 20)
+	vp.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
 	vp.BorderSizePixel = 0
-	vp.Ambient = Color3.fromRGB(180, 180, 190)
+	vp.Ambient = Color3.fromRGB(200, 200, 210)
 	vp.LightColor = Color3.fromRGB(255, 255, 255)
-	vp.LightDirection = Vector3.new(-1, -1, -1)
+	vp.LightDirection = Vector3.new(-0.5, -1, -0.4)
 	vp.Parent = slot
 
 	local world = Instance.new("WorldModel")
 	world.Parent = vp
 	local cam = Instance.new("Camera")
-	cam.FieldOfView = 35
+	cam.FieldOfView = 28
 	cam.Parent = vp
 	vp.CurrentCamera = cam
 
 	local model = Instance.new("Model")
-	model.Name = "R6Preview"
+	model.Name = "AvatarPreview"
 	model.Parent = world
 
-	local function limb(name, size, cf, color)
-		local p = Instance.new("Part")
-		p.Name = name
-		p.Size = size
-		p.CFrame = cf
-		p.Anchored = true
-		p.CanCollide = false
-		p.Material = Enum.Material.SmoothPlastic
-		p.Color = color
-		p.TopSurface = Enum.SurfaceType.Smooth
-		p.BottomSurface = Enum.SurfaceType.Smooth
-		p.Parent = model
-		return p
-	end
-
-	local skin = Color3.fromRGB(204, 170, 140)
-	local shirt = Color3.fromRGB(72, 120, 190)
-	local pants = Color3.fromRGB(42, 46, 58)
-
-	local torso = limb("Torso", Vector3.new(2, 2, 1), CFrame.new(0, 1, 0), shirt)
-	local head = limb("Head", Vector3.new(1.2, 1.2, 1.2), CFrame.new(0, 2.6, 0), skin)
-	local la = limb("Left Arm", Vector3.new(1, 2, 1), CFrame.new(-1.5, 1, 0), skin)
-	local ra = limb("Right Arm", Vector3.new(1, 2, 1), CFrame.new(1.5, 1, 0), skin)
-	local ll = limb("Left Leg", Vector3.new(1, 2, 1), CFrame.new(-0.5, -1, 0), pants)
-	local rl = limb("Right Leg", Vector3.new(1, 2, 1), CFrame.new(0.5, -1, 0), pants)
-
-	local face = Instance.new("Decal")
-	face.Face = Enum.NormalId.Front
-	face.Texture = "rbxasset://textures/face.png"
-	face.Parent = head
-
 	local bases = {}
-	for _, p in ipairs(model:GetChildren()) do
-		if p:IsA("BasePart") then bases[p] = p.CFrame end
+	local bones = {}
+	local pivot = CFrame.new()
+	local ready = false
+	local displayName = o.Name or (LocalPlayer and LocalPlayer.DisplayName) or "LocalPlayer"
+
+	local function captureBases(m)
+		bases = {}
+		for _, p in ipairs(m:GetDescendants()) do
+			if p:IsA("BasePart") then
+				bases[p] = p.CFrame
+			end
+		end
+		local root = m:FindFirstChild("HumanoidRootPart") or m:FindFirstChild("Torso") or m.PrimaryPart
+		if root then
+			pivot = root.CFrame
+		else
+			local ok, cf = pcall(function() return m:GetBoundingBox() end)
+			if ok and typeof(cf) == "CFrame" then pivot = cf end
+		end
+		bones = {}
+		local function part(n)
+			return m:FindFirstChild(n, true)
+		end
+		local pairsList = {
+			{ "Head", "Torso" }, { "Head", "UpperTorso" },
+			{ "Torso", "Left Arm" }, { "Torso", "Right Arm" },
+			{ "Torso", "Left Leg" }, { "Torso", "Right Leg" },
+			{ "UpperTorso", "LowerTorso" },
+			{ "UpperTorso", "LeftUpperArm" }, { "LeftUpperArm", "LeftLowerArm" }, { "LeftLowerArm", "LeftHand" },
+			{ "UpperTorso", "RightUpperArm" }, { "RightUpperArm", "RightLowerArm" }, { "RightLowerArm", "RightHand" },
+			{ "LowerTorso", "LeftUpperLeg" }, { "LeftUpperLeg", "LeftLowerLeg" }, { "LeftLowerLeg", "LeftFoot" },
+			{ "LowerTorso", "RightUpperLeg" }, { "RightUpperLeg", "RightLowerLeg" }, { "RightLowerLeg", "RightFoot" },
+		}
+		for _, pr in ipairs(pairsList) do
+			local a, b = part(pr[1]), part(pr[2])
+			if a and b and a:IsA("BasePart") and b:IsA("BasePart") then
+				bones[#bones + 1] = { a, b }
+			end
+		end
 	end
 
-	local bones = {
-		{ head, torso },
-		{ torso, la }, { torso, ra },
-		{ torso, ll }, { torso, rl },
-	}
+	local function fallbackR6()
+		local function limb(name, size, cf, color)
+			local p = Instance.new("Part")
+			p.Name = name
+			p.Size = size
+			p.CFrame = cf
+			p.Anchored = true
+			p.CanCollide = false
+			p.Material = Enum.Material.SmoothPlastic
+			p.Color = color
+			p.Parent = model
+			return p
+		end
+		local skin, shirt, pants = Color3.fromRGB(204, 170, 140), Color3.fromRGB(72, 120, 190), Color3.fromRGB(42, 46, 58)
+		limb("Torso", Vector3.new(2, 2, 1), CFrame.new(0, 1, 0), shirt)
+		local head = limb("Head", Vector3.new(1.2, 1.2, 1.2), CFrame.new(0, 2.6, 0), skin)
+		limb("Left Arm", Vector3.new(1, 2, 1), CFrame.new(-1.5, 1, 0), skin)
+		limb("Right Arm", Vector3.new(1, 2, 1), CFrame.new(1.5, 1, 0), skin)
+		limb("Left Leg", Vector3.new(1, 2, 1), CFrame.new(-0.5, -1, 0), pants)
+		limb("Right Leg", Vector3.new(1, 2, 1), CFrame.new(0.5, -1, 0), pants)
+		local face = Instance.new("Decal")
+		face.Face = Enum.NormalId.Front
+		face.Texture = "rbxasset://textures/face.png"
+		face.Parent = head
+		captureBases(model)
+		ready = true
+	end
 
-	cam.CFrame = CFrame.new(Vector3.new(0, 1.1, 7.5), Vector3.new(0, 1.0, 0))
+	task.spawn(function()
+		local ok, result = pcall(function()
+			local desc = Players:GetHumanoidDescriptionFromUserId(LocalPlayer.UserId)
+			if Players.CreateHumanoidModelFromDescription then
+				return Players:CreateHumanoidModelFromDescription(desc, Enum.HumanoidRigType.R15)
+			end
+			return nil
+		end)
+		if not ok or not result then
+			ok, result = pcall(function()
+				return Players:CreateHumanoidModelFromUserId(LocalPlayer.UserId)
+			end)
+		end
+		if ok and result then
+			for _, c in ipairs(model:GetChildren()) do c:Destroy() end
+			result.Name = "Avatar"
+			result.Parent = world
+			model:Destroy()
+			model = result
+			for _, d in ipairs(model:GetDescendants()) do
+				if d:IsA("BasePart") then
+					d.Anchored = true
+					d.CanCollide = false
+				elseif d:IsA("Script") or d:IsA("LocalScript") then
+					d.Disabled = true
+				end
+			end
+			local hum = model:FindFirstChildOfClass("Humanoid")
+			if hum then
+				hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+				pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
+			end
+			local root = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+			if root then
+				local bbCF, bbSize = model:GetBoundingBox()
+				local offset = root.Position - bbCF.Position
+				for _, part in ipairs(model:GetDescendants()) do
+					if part:IsA("BasePart") then
+						part.CFrame = CFrame.new(-offset) * (part.CFrame - root.Position) * CFrame.new(root.Position)
+					end
+				end
+				-- center at origin
+				local cf2, size2 = model:GetBoundingBox()
+				local delta = -cf2.Position
+				for _, part in ipairs(model:GetDescendants()) do
+					if part:IsA("BasePart") then
+						part.CFrame = part.CFrame + delta
+					end
+				end
+			end
+			captureBases(model)
+			ready = true
+		else
+			fallbackR6()
+		end
+	end)
+
+	cam.CFrame = CFrame.new(Vector3.new(0, 1.5, 9.5), Vector3.new(0, 1.2, 0))
 
 	local overlay = new("Frame", {
 		Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ClipsDescendants = true, ZIndex = 5, Parent = slot,
@@ -1803,7 +1969,7 @@ function Elements:AddESPPreview(o)
 	local box = new("Frame", { BackgroundTransparency = 1, Visible = false, Parent = overlay })
 	local boxStroke = stroke(box, "Accent", 1)
 	local nameLbl = new("TextLabel", {
-		Size = UDim2.fromOffset(100, 14), Text = o.Name or "LocalPlayer", TextSize = 11,
+		Size = UDim2.fromOffset(120, 14), Text = displayName, TextSize = 11,
 		TextXAlignment = Enum.TextXAlignment.Center, Visible = false, Parent = overlay,
 	})
 	local hpBg = new("Frame", {
@@ -1815,11 +1981,13 @@ function Elements:AddESPPreview(o)
 		Skin = { BackgroundColor3 = "Accent" }, Parent = hpBg,
 	})
 	local skLines = {}
-	for i = 1, #bones do
-		skLines[i] = new("Frame", {
-			AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(1, 1),
-			BackgroundColor3 = Theme.Accent, BorderSizePixel = 0, Visible = false, Parent = overlay,
-		})
+	local function ensureLines(n)
+		while #skLines < n do
+			skLines[#skLines + 1] = new("Frame", {
+				AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(1, 1),
+				BackgroundColor3 = Theme.Accent, BorderSizePixel = 0, Visible = false, Parent = overlay,
+			})
+		end
 	end
 
 	local flags = o.Flags or {
@@ -1830,14 +1998,28 @@ function Elements:AddESPPreview(o)
 	local angle = 0
 	local conn = RunService.RenderStepped:Connect(function(dt)
 		if Library._unloaded or not slot.Parent then return end
-		angle = (angle + dt * 0.5) % (math.pi * 2)
+		if not ready then return end
+		angle = (angle + dt * 0.45) % (math.pi * 2)
 		local rot = CFrame.Angles(0, angle, 0)
 		for part, base in pairs(bases) do
-			part.CFrame = rot * base
+			if part.Parent then
+				part.CFrame = rot * base
+			end
 		end
 
 		local vs = vp.AbsoluteSize
 		if vs.X < 2 or vs.Y < 2 then return end
+
+		-- auto-frame camera to model bounds
+		local okb, bbCF, bbSize = pcall(function()
+			local c, sz = model:GetBoundingBox()
+			return c, sz
+		end)
+		if okb and bbCF then
+			local dist = math.max(bbSize.X, bbSize.Y, bbSize.Z) * 1.35
+			dist = math.clamp(dist, 6, 14)
+			cam.CFrame = CFrame.new(bbCF.Position + Vector3.new(0, bbSize.Y * 0.05, dist), bbCF.Position)
+		end
 
 		local function project(worldPos)
 			local rel = cam.CFrame:PointToObjectSpace(worldPos)
@@ -1850,32 +2032,31 @@ function Elements:AddESPPreview(o)
 			local ndcY = (rel.Y * sy) / -rel.Z
 			local px = (ndcX * 0.5 + 0.5) * vs.X
 			local py = (0.5 - ndcY * 0.5) * vs.Y
-			if px < -20 or px > vs.X + 20 or py < -20 or py > vs.Y + 20 then return nil end
 			return Vector2.new(px, py)
 		end
 
 		local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
 		local any = false
 		for part in pairs(bases) do
-			for _, c in ipairs({
-				Vector3.new(-1, -1, -1), Vector3.new(-1, -1, 1), Vector3.new(-1, 1, -1), Vector3.new(-1, 1, 1),
-				Vector3.new(1, -1, -1), Vector3.new(1, -1, 1), Vector3.new(1, 1, -1), Vector3.new(1, 1, 1),
-			}) do
-				local sp = project((part.CFrame * CFrame.new(c * part.Size * 0.5)).Position)
-				if sp then
-					any = true
-					minX = math.min(minX, sp.X); minY = math.min(minY, sp.Y)
-					maxX = math.max(maxX, sp.X); maxY = math.max(maxY, sp.Y)
+			if part.Parent then
+				for _, c in ipairs({
+					Vector3.new(-1, -1, -1), Vector3.new(-1, -1, 1), Vector3.new(-1, 1, -1), Vector3.new(-1, 1, 1),
+					Vector3.new(1, -1, -1), Vector3.new(1, -1, 1), Vector3.new(1, 1, -1), Vector3.new(1, 1, 1),
+				}) do
+					local sp = project((part.CFrame * CFrame.new(c * part.Size * 0.5)).Position)
+					if sp then
+						any = true
+						minX = math.min(minX, sp.X); minY = math.min(minY, sp.Y)
+						maxX = math.max(maxX, sp.X); maxY = math.max(maxY, sp.Y)
+					end
 				end
 			end
 		end
-
-		local padPx = 2
 		if any then
-			minX = math.clamp(minX - padPx, 0, vs.X)
-			minY = math.clamp(minY - padPx, 0, vs.Y)
-			maxX = math.clamp(maxX + padPx, 0, vs.X)
-			maxY = math.clamp(maxY + padPx, 0, vs.Y)
+			minX = math.clamp(minX - 2, 1, vs.X - 1)
+			minY = math.clamp(minY - 2, 1, vs.Y - 1)
+			maxX = math.clamp(maxX + 2, 1, vs.X - 1)
+			maxY = math.clamp(maxY + 2, 1, vs.Y - 1)
 		end
 
 		local col = Theme.Accent
@@ -1886,7 +2067,7 @@ function Elements:AddESPPreview(o)
 		local showHp = Library.Flags[flags.Health] == true
 		local showSk = Library.Flags[flags.Skeleton] == true
 
-		if showBox and any and maxX > minX and maxY > minY then
+		if showBox and any and maxX > minX then
 			box.Visible = true
 			box.Position = UDim2.fromOffset(math.floor(minX), math.floor(minY))
 			box.Size = UDim2.fromOffset(math.max(1, math.floor(maxX - minX)), math.max(1, math.floor(maxY - minY)))
@@ -1894,29 +2075,28 @@ function Elements:AddESPPreview(o)
 		else
 			box.Visible = false
 		end
-
 		if showName and any then
 			nameLbl.Visible = true
+			nameLbl.Text = displayName
 			nameLbl.TextColor3 = col
-			local nx = math.clamp(math.floor((minX + maxX) * 0.5 - 50), 0, math.max(0, vs.X - 100))
-			local ny = math.clamp(math.floor(minY - 16), 0, math.max(0, vs.Y - 14))
-			nameLbl.Position = UDim2.fromOffset(nx, ny)
+			nameLbl.Position = UDim2.fromOffset(
+				math.clamp(math.floor((minX + maxX) * 0.5 - 60), 0, math.max(0, vs.X - 120)),
+				math.clamp(math.floor(minY - 16), 0, math.max(0, vs.Y - 14))
+			)
 		else
 			nameLbl.Visible = false
 		end
-
 		if showHp and any then
 			hpBg.Visible = true
 			local h = math.max(16, maxY - minY)
 			hpBg.Size = UDim2.fromOffset(3, math.floor(h))
-			local hx = math.clamp(math.floor(minX - 6), 0, math.max(0, vs.X - 3))
-			hpBg.Position = UDim2.fromOffset(hx, math.floor(minY))
+			hpBg.Position = UDim2.fromOffset(math.clamp(math.floor(minX - 6), 0, math.max(0, vs.X - 3)), math.floor(minY))
 			hpFill.BackgroundColor3 = col
 		else
 			hpBg.Visible = false
 		end
-
 		if showSk then
+			ensureLines(#bones)
 			for i, pair in ipairs(bones) do
 				local a = project(pair[1].Position)
 				local b = project(pair[2].Position)
@@ -1933,6 +2113,7 @@ function Elements:AddESPPreview(o)
 					ln.Visible = false
 				end
 			end
+			for i = #bones + 1, #skLines do skLines[i].Visible = false end
 		else
 			for _, ln in ipairs(skLines) do ln.Visible = false end
 		end
@@ -2220,6 +2401,7 @@ function Library:CreateWindow(o)
 
 		local detachWin, detachHead
 		local grabOff = Vector2.new(0, 0)
+		local savedOrder = 0
 
 		local function destroyDetachWin()
 			if detachWin then
@@ -2243,7 +2425,7 @@ function Library:CreateWindow(o)
 			destroyDetachWin()
 			local btn = tabsBar:Add(name, function()
 				if not tab.Detached then W:SelectTab(tab) end
-			end)
+			end, savedOrder > 0 and savedOrder or nil)
 			tab.Btn = btn
 			W:wireTabDrag(tab)
 			local otherActive = W.Active and not W.Active.Detached and W.Active ~= tab
@@ -2256,9 +2438,11 @@ function Library:CreateWindow(o)
 			end
 		end
 
-		function tab:Detach(at, follow)
+		function tab:Detach(at)
 			if tab.Detached then return end
 			tab.Detached = true
+			local entry = tabsBar.Tabs[name]
+			savedOrder = entry and entry.Order or 0
 			if W.Active == tab then
 				local other
 				for _, t in ipairs(W.Tabs) do
@@ -2275,15 +2459,15 @@ function Library:CreateWindow(o)
 			tabsBar:Remove(name)
 			tab.Btn = nil
 
-			local dw = math.max(280, math.floor(frame.AbsoluteSize.X * 0.52))
-			local dh = math.max(220, math.floor(frame.AbsoluteSize.Y * 0.65))
+			local dw = math.floor(frame.AbsoluteSize.X)
+			local dh = math.floor(frame.AbsoluteSize.Y)
 			local mp = at or mouse()
-			local px = math.floor(mp.X - (follow and grabOff.X or dw * 0.5))
-			local py = math.floor(mp.Y - (follow and grabOff.Y or 14))
+			local px = math.floor(mp.X - grabOff.X)
+			local py = math.floor(mp.Y - grabOff.Y)
 
 			detachWin = new("Frame", {
 				Name = "Detached_" .. name,
-				Size = UDim2.fromOffset(dw + 2, dh + 2),
+				Size = UDim2.fromOffset(dw, dh),
 				Position = UDim2.fromOffset(px, py),
 				Skin = { BackgroundColor3 = "Window" }, Active = true, ZIndex = 60, Parent = Gui,
 			})
@@ -2357,6 +2541,9 @@ function Library:CreateWindow(o)
 				if t.Detached then return end
 				calibrate(btn, i)
 				local start = mouse()
+				local ap = btn.AbsolutePosition
+				-- keep cursor over the tab title: offset from click point within button to window top-left
+				grabOff = Vector2.new(start.X - ap.X, start.Y - ap.Y + 2)
 				local armed = false
 				Library._dragEnd = function()
 					dropOverlay.Visible = false
@@ -2378,10 +2565,9 @@ function Library:CreateWindow(o)
 						dropOverlay.Visible = inside(frame, mp)
 						return
 					end
-					if (mp - start).Magnitude > 10 and not armed then
+					if (mp - start).Magnitude > 8 and not armed then
 						armed = true
-						grabOff = Vector2.new(40, 12)
-						t:Detach(mp, true)
+						t:Detach(mp)
 						if t.DetachWin then
 							t.DetachWin.Position = UDim2.fromOffset(
 								math.floor(mp.X - grabOff.X),
