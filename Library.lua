@@ -1770,42 +1770,54 @@ function Elements:AddESPPreview(o)
 	model.Name = "AvatarPreview"
 	model.Parent = world
 
+	local relatives = {}
 	local bones = {}
 	local ready = false
-	local basePivot = CFrame.new()
+	local rootPart = nil
 	local displayName = o.Name or (LocalPlayer and LocalPlayer.DisplayName) or "LocalPlayer"
 
-	local function setupModel(m)
+	local function freezeModel(m)
 		for _, d in ipairs(m:GetDescendants()) do
 			if d:IsA("BasePart") then
 				d.Anchored = true
 				d.CanCollide = false
 				d.CastShadow = false
+				d.AssemblyLinearVelocity = Vector3.zero
+				d.AssemblyAngularVelocity = Vector3.zero
 			elseif d:IsA("Script") or d:IsA("LocalScript") then
 				d.Disabled = true
+			elseif d:IsA("Humanoid") then
+				d.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+				d.PlatformStand = true
+				pcall(function() d.EvaluateStateMachine = false end)
 			end
 		end
-		local hum = m:FindFirstChildOfClass("Humanoid")
-		if hum then
-			hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
-			pcall(function()
-				hum.EvaluateStateMachine = false
-			end)
+	end
+
+	local function captureRelatives(m)
+		rootPart = m:FindFirstChild("HumanoidRootPart")
+			or m:FindFirstChild("Torso")
+			or m:FindFirstChild("UpperTorso")
+			or m.PrimaryPart
+		if not rootPart then
+			for _, d in ipairs(m:GetDescendants()) do
+				if d:IsA("BasePart") then rootPart = d break end
+			end
 		end
-		-- keep accessories welded; center whole model via PivotTo
-		local ok, bbCF = pcall(function()
-			local c = m:GetBoundingBox()
-			return c
-		end)
-		if ok and bbCF then
-			m:PivotTo(m:GetPivot() - bbCF.Position)
+		if not rootPart then return false end
+		m.PrimaryPart = rootPart
+		local rootCF = rootPart.CFrame
+		relatives = {}
+		for _, d in ipairs(m:GetDescendants()) do
+			if d:IsA("BasePart") then
+				relatives[d] = rootCF:ToObjectSpace(d.CFrame)
+			end
 		end
-		basePivot = m:GetPivot()
 		bones = {}
 		local function part(n)
 			return m:FindFirstChild(n, true)
 		end
-		local pairsList = {
+		for _, pr in ipairs({
 			{ "Head", "UpperTorso" }, { "Head", "Torso" },
 			{ "UpperTorso", "LowerTorso" },
 			{ "UpperTorso", "LeftUpperArm" }, { "LeftUpperArm", "LeftLowerArm" }, { "LeftLowerArm", "LeftHand" },
@@ -1814,14 +1826,36 @@ function Elements:AddESPPreview(o)
 			{ "LowerTorso", "RightUpperLeg" }, { "RightUpperLeg", "RightLowerLeg" }, { "RightLowerLeg", "RightFoot" },
 			{ "Torso", "Left Arm" }, { "Torso", "Right Arm" },
 			{ "Torso", "Left Leg" }, { "Torso", "Right Leg" },
-		}
-		for _, pr in ipairs(pairsList) do
+		}) do
 			local a, b = part(pr[1]), part(pr[2])
 			if a and b and a:IsA("BasePart") and b:IsA("BasePart") then
 				bones[#bones + 1] = { a, b }
 			end
 		end
-		ready = true
+		return true
+	end
+
+	local function centerAtOrigin(m)
+		if not rootPart then return end
+		local ok, bbCF = pcall(function()
+			return m:GetBoundingBox()
+		end)
+		if not ok or not bbCF then return end
+		local delta = -bbCF.Position
+		for part, rel in pairs(relatives) do
+			if part.Parent then
+				part.CFrame = part.CFrame + delta
+			end
+		end
+		captureRelatives(m)
+	end
+
+	local function applyPose(worldCF)
+		for part, rel in pairs(relatives) do
+			if part.Parent then
+				part.CFrame = worldCF * rel
+			end
+		end
 	end
 
 	local function fallbackR6()
@@ -1848,8 +1882,10 @@ function Elements:AddESPPreview(o)
 		face.Face = Enum.NormalId.Front
 		face.Texture = "rbxasset://textures/face.png"
 		face.Parent = head
-		model.PrimaryPart = model:FindFirstChild("Torso")
-		setupModel(model)
+		freezeModel(model)
+		captureRelatives(model)
+		centerAtOrigin(model)
+		ready = true
 	end
 
 	task.spawn(function()
@@ -1871,13 +1907,29 @@ function Elements:AddESPPreview(o)
 			result.Parent = world
 			model:Destroy()
 			model = result
-			setupModel(model)
+			freezeModel(model)
+			-- accessories often stream in after the body
+			for _ = 1, 40 do
+				local acc = 0
+				for _, d in ipairs(model:GetDescendants()) do
+					if d:IsA("Accessory") or d:IsA("Hat") then acc = acc + 1 end
+				end
+				if acc > 0 then break end
+				task.wait(0.05)
+			end
+			task.wait(0.15)
+			freezeModel(model)
+			if captureRelatives(model) then
+				centerAtOrigin(model)
+				ready = true
+			else
+				fallbackR6()
+			end
 		else
 			fallbackR6()
 		end
 	end)
 
-	-- camera farther so character is smaller in the same frame
 	cam.CFrame = CFrame.new(Vector3.new(0, 1.4, 14), Vector3.new(0, 1.2, 0))
 
 	local overlay = new("Frame", {
@@ -1913,12 +1965,26 @@ function Elements:AddESPPreview(o)
 	}
 
 	local angle = 0
+	local lastAccCount = 0
 	local conn = RunService.RenderStepped:Connect(function(dt)
 		if Library._unloaded or not slot.Parent then return end
 		if not ready or not model.Parent then return end
+
+		-- if a late accessory lands, re-bind relatives once
+		local acc = 0
+		for _, d in ipairs(model:GetDescendants()) do
+			if d:IsA("Accessory") or d:IsA("Hat") then acc = acc + 1 end
+		end
+		if acc ~= lastAccCount then
+			lastAccCount = acc
+			freezeModel(model)
+			captureRelatives(model)
+			centerAtOrigin(model)
+		end
+
 		angle = (angle + dt * 0.4) % (math.pi * 2)
-		-- spin whole model (accessories stay attached)
-		model:PivotTo(CFrame.Angles(0, angle, 0) * (basePivot - basePivot.Position))
+		-- spin in place around origin (Y axis only)
+		applyPose(CFrame.Angles(0, angle, 0))
 
 		local vs = vp.AbsoluteSize
 		if vs.X < 2 or vs.Y < 2 then return end
@@ -1947,8 +2013,8 @@ function Elements:AddESPPreview(o)
 
 		local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
 		local any = false
-		for _, part in ipairs(model:GetDescendants()) do
-			if part:IsA("BasePart") and not part:FindFirstAncestorOfClass("Accessory") then
+		for part in pairs(relatives) do
+			if part.Parent and not part:FindFirstAncestorOfClass("Accessory") then
 				for _, c in ipairs({
 					Vector3.new(-1, -1, -1), Vector3.new(-1, -1, 1), Vector3.new(-1, 1, -1), Vector3.new(-1, 1, 1),
 					Vector3.new(1, -1, -1), Vector3.new(1, -1, 1), Vector3.new(1, 1, -1), Vector3.new(1, 1, 1),
