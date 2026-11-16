@@ -4212,8 +4212,11 @@ do
 		local rp = hrp.Position
 		local dist = (cam.CFrame.Position - rp).Magnitude
 		local range = F("esp_range", nil)
-		local dmin, dmax = 0, 1500
-		if type(range) == "table" then dmin, dmax = range.Min or 0, range.Max or 1500 end
+		local dmin, dmax = 0, 3000
+		if type(range) == "table" then
+			dmin = tonumber(range.Min or range[1]) or 0
+			dmax = tonumber(range.Max or range[2]) or 3000
+		end
 		if dist < dmin or dist > dmax then return false end
 		local status = Library:GetPlayerStatus(p)
 		if status == "Friendly" and F("esp_hide_friendly", false) then return false end
@@ -4433,6 +4436,10 @@ do
 	conn(Players.PlayerRemoving:Connect(destroyObject))
 	conn(RunService.RenderStepped:Connect(function(dt)
 		if Library._unloaded then return end
+		-- Keep Enabled in sync with the menu flag (configs / toggles)
+		if Library.Flags.esp_enabled ~= nil then
+			ESP.Enabled = Library.Flags.esp_enabled and true or false
+		end
 		if not ESP.Enabled then
 			if ESP._shown then
 				ESP._shown = false
@@ -4475,49 +4482,80 @@ local function buildESP(W)
 	local prev = tab:AddSection("Preview", "Right")
 
 	Library.ESP.Enabled = true
-	main:AddToggle("esp_enabled", {
+	Library.Flags.esp_enabled = true
+
+	local en = main:AddToggle("esp_enabled", {
 		Text = "Enabled",
 		Default = true,
-		Callback = function(v) Library.ESP.Enabled = v and true or false end,
+		Callback = function(v)
+			Library.ESP.Enabled = v and true or false
+			Library.Flags.esp_enabled = Library.ESP.Enabled
+		end,
 	})
-	main:AddDivider()
+	-- Feature toggles only appear while Enabled is on
+	local sub = en:AddSubOptions()
 
-	local box = main:AddToggle("esp_box", { Text = "Box", Default = true })
-	box:AddColorPicker("esp_color", { Default = Theme.Accent, NoAnim = true, NoAlpha = true })
+	local function col(id, def)
+		return {
+			Default = def, NoAnim = true, NoAlpha = true,
+			Callback = function(c)
+				if typeof(c) == "Color3" then Library.Flags[id] = c end
+			end,
+		}
+	end
+
+	local box = sub:AddToggle("esp_box", { Text = "Box", Default = true })
+	box:AddColorPicker("esp_color", col("esp_color", Theme.Accent))
 	local bs = box:AddSettings({ Animations = true })
 	bs:AddDropdown("esp_box_style", { Text = "Style", Items = { "Full", "Corners" }, Default = "Full" })
 	bs:AddToggle("esp_box_outline", { Text = "Outline", Default = true })
 	bs:AddNumberInput("esp_box_thick", { Text = "Thickness", Min = 1, Max = 3, Step = 1, Default = 1, Suffix = " px" })
 	bs:AddToggle("esp_box_fill", { Text = "Fill", Default = true })
 	bs:AddDropdown("esp_fill_effect", { Text = "Fill effect", Items = { "Breathing", "Pulse", "Gradient", "Wave", "Rainbow", "Solid" }, Default = "Breathing" })
-	bs:AddLabel("Fill colour"):AddColorPicker("esp_fill_color", { Default = Theme.Accent, NoAlpha = true, NoAnim = true })
-	bs:AddLabel("Fill colour 2"):AddColorPicker("esp_fill_color2", { Default = Color3.fromRGB(110, 70, 220), NoAlpha = true, NoAnim = true })
+	bs:AddLabel("Fill colour"):AddColorPicker("esp_fill_color", col("esp_fill_color", Theme.Accent))
+	bs:AddLabel("Fill colour 2"):AddColorPicker("esp_fill_color2", col("esp_fill_color2", Color3.fromRGB(110, 70, 220)))
 	bs:AddSlider("esp_fill_alpha", { Text = "Fill opacity", Min = 5, Max = 80, Default = 35, Suffix = "%" })
 	bs:AddSlider("esp_fill_speed", { Text = "Effect speed", Min = 25, Max = 300, Default = 100, Suffix = "%" })
 
-	local sk = main:AddToggle("esp_skeleton", { Text = "Skeleton", Default = false })
-	sk:AddColorPicker("esp_skeleton_color", { Default = Color3.new(1, 1, 1), NoAlpha = true, NoAnim = true })
+	local sk = sub:AddToggle("esp_skeleton", { Text = "Skeleton", Default = false })
+	sk:AddColorPicker("esp_skeleton_color", col("esp_skeleton_color", Color3.new(1, 1, 1)))
 	sk:AddSettings():AddNumberInput("esp_skeleton_thick", { Text = "Thickness", Min = 1, Max = 4, Step = 1, Default = 1, Suffix = " px" })
 
-	local hp = main:AddToggle("esp_health", { Text = "Health bar", Default = true })
+	local hp = sub:AddToggle("esp_health", { Text = "Health bar", Default = true })
 	local hs = hp:AddSettings({ Animations = true })
 	hs:AddDropdown("esp_health_style", { Text = "Style", Items = { "Gradient", "Dynamic", "Solid" }, Default = "Gradient" })
 	hs:AddDropdown("esp_health_side", { Text = "Side", Items = { "Left", "Right" }, Default = "Left" })
 	hs:AddNumberInput("esp_health_width", { Text = "Width", Min = 1, Max = 6, Step = 1, Default = 2, Suffix = " px" })
-	hs:AddLabel("High colour"):AddColorPicker("esp_hp_high", { Default = Color3.fromRGB(70, 220, 110), NoAlpha = true, NoAnim = true })
-	hs:AddLabel("Low colour"):AddColorPicker("esp_hp_low", { Default = Color3.fromRGB(235, 65, 75), NoAlpha = true, NoAnim = true })
+	hs:AddLabel("High colour"):AddColorPicker("esp_hp_high", col("esp_hp_high", Color3.fromRGB(70, 220, 110)))
+	hs:AddLabel("Low colour"):AddColorPicker("esp_hp_low", col("esp_hp_low", Color3.fromRGB(235, 65, 75)))
 	hs:AddToggle("esp_health_text", { Text = "Health text", Default = false })
 
-	local nm = main:AddToggle("esp_name", { Text = "Name", Default = true })
-	nm:AddColorPicker("esp_name_color", { Default = Color3.new(1, 1, 1), NoAlpha = true, NoAnim = true })
+	local nm = sub:AddToggle("esp_name", { Text = "Name", Default = true })
+	nm:AddColorPicker("esp_name_color", col("esp_name_color", Color3.new(1, 1, 1)))
 	local ns = nm:AddSettings()
 	ns:AddDropdown("esp_name_source", { Text = "Show", Items = { "Display name", "Username" }, Default = "Display name" })
 	ns:AddToggle("esp_distance", { Text = "Distance", Default = true })
 	ns:AddNumberInput("esp_name_size", { Text = "Text size", Min = 9, Max = 20, Step = 1, Default = 12, Suffix = " px" })
 
-	filt:AddRangeSlider("esp_range", { Text = "Distance range", Min = 0, Max = 3000, Default = { Min = 0, Max = 3000 }, Suffix = " st" })
+	local range = filt:AddRangeSlider("esp_range", {
+		Text = "Distance range", Min = 0, Max = 3000,
+		Default = { Min = 0, Max = 3000 }, Suffix = " st",
+	})
 	filt:AddToggle("esp_hide_friendly", { Text = "Hide friendly", Default = false })
 	filt:AddToggle("esp_status_color", { Text = "Use status colours", Default = false })
+
+	-- After config autoload, force a usable default range if min was left very high
+	task.defer(function()
+		task.wait(0.6)
+		if Library._unloaded then return end
+		local r = Library.Flags.esp_range
+		if type(r) == "table" and (tonumber(r.Min) or 0) > 100 then
+			local rv = { Min = 0, Max = tonumber(r.Max) or 3000 }
+			Library.Flags.esp_range = rv
+			if range and range.SetValue then pcall(range.SetValue, range, rv, true) end
+		end
+		Library.ESP.Enabled = Library.Flags.esp_enabled ~= false
+	end)
 
 	prev:AddESPPreview({ Height = 300 })
 end
