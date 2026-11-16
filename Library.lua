@@ -2287,9 +2287,15 @@ function Elements:AddListbox(id, o)
 end
 
 local function newSectionFrame(column, order)
-	local sec = new("Frame", {
-		Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, Skin = { BackgroundColor3 = "Section" },
+	-- Outer wrap is transparent; the panel is inset 1px so the border is drawn fully
+	-- inside the column and cannot be clipped by the scroll frame / body ClipsDescendants.
+	local wrap = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
 		LayoutOrder = order, Parent = column,
+	})
+	local sec = new("Frame", {
+		Position = UDim2.fromOffset(1, 0), Size = UDim2.new(1, -2, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+		Skin = { BackgroundColor3 = "Section" }, Parent = wrap,
 	})
 	stroke(sec, "Border")
 	vlist(sec, 0)
@@ -2497,17 +2503,18 @@ function Library:CreateWindow(o)
 			CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y,
 			Parent = page,
 		})
-		local scrollPad = pad(scroll, 1, 1, 1, 1)
+		-- Extra pad keeps section strokes clear of the scroll clip edge / scrollbar.
+		local scrollPad = pad(scroll, 2, 2, 2, 2)
 		local function fitScroll()
 			local over = scroll.AbsoluteCanvasSize.Y > scroll.AbsoluteWindowSize.Y + 0.5
-			scrollPad.PaddingRight = UDim.new(0, over and 5 or 1)
+			scrollPad.PaddingRight = UDim.new(0, over and 6 or 2)
 		end
 		scroll:GetPropertyChangedSignal("AbsoluteCanvasSize"):Connect(fitScroll)
 		scroll:GetPropertyChangedSignal("AbsoluteWindowSize"):Connect(fitScroll)
 		tab.Page, tab.Scroll, tab.Btn = page, scroll, tabBtn
 		local half = M.ColGap / 2
-		tab.LeftCol = new("Frame", { Size = UDim2.new(0.5, -half, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Parent = scroll })
-		tab.RightCol = new("Frame", { Position = UDim2.new(0.5, half, 0, 0), Size = UDim2.new(0.5, -half, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Parent = scroll })
+		tab.LeftCol = new("Frame", { Size = UDim2.new(0.5, -half - 1, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Parent = scroll })
+		tab.RightCol = new("Frame", { Position = UDim2.new(0.5, half, 0, 0), Size = UDim2.new(0.5, -half - 1, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Parent = scroll })
 		vlist(tab.LeftCol, M.ColGap)
 		vlist(tab.RightCol, M.ColGap)
 
@@ -3551,14 +3558,63 @@ function Library:_touch()
 	end)
 end
 
-local Spectate = { Target = nil, Conns = {}, Hooks = {} }
+local Spectate = { Target = nil, Conns = {}, Hooks = {}, Tags = {} }
 
 local function specNotify() for _, f in ipairs(Spectate.Hooks) do task.spawn(f) end end
+
+local function clearSpecTags()
+	for _, bb in pairs(Spectate.Tags) do
+		pcall(function() bb:Destroy() end)
+	end
+	Spectate.Tags = {}
+end
+
+-- Nameplates above every other player while spectating (camera is no longer on your character).
+local function mountSpecTag(p, ch)
+	if not Spectate.Target or p == LocalPlayer then return end
+	local head = ch:FindFirstChild("Head")
+	if not head then
+		head = ch:WaitForChild("Head", 5)
+	end
+	if not head or not Spectate.Target then return end
+	local old = Spectate.Tags[p]
+	if old then pcall(function() old:Destroy() end) end
+	local bb = Instance.new("BillboardGui")
+	bb.Name = "InteriumSpecTag"
+	bb.AlwaysOnTop = true
+	bb.Size = UDim2.fromOffset(220, 28)
+	bb.StudsOffset = Vector3.new(0, 2.6, 0)
+	bb.MaxDistance = 1000
+	bb.Adornee = head
+	bb.Parent = head
+	local lbl = Instance.new("TextLabel")
+	lbl.BackgroundTransparency = 1
+	lbl.Size = UDim2.fromScale(1, 1)
+	lbl.Font = Enum.Font.Code
+	lbl.TextSize = 14
+	lbl.TextColor3 = Theme.Text
+	lbl.TextStrokeTransparency = 0.45
+	lbl.TextStrokeColor3 = Color3.new(0, 0, 0)
+	lbl.Text = (p.DisplayName ~= p.Name) and (p.DisplayName .. "  @" .. p.Name) or p.DisplayName
+	lbl.Parent = bb
+	Spectate.Tags[p] = bb
+end
+
+local function attachSpecTag(p)
+	if p == LocalPlayer then return end
+	if p.Character then
+		task.spawn(mountSpecTag, p, p.Character)
+	end
+	table.insert(Spectate.Conns, p.CharacterAdded:Connect(function(ch)
+		task.spawn(mountSpecTag, p, ch)
+	end))
+end
 
 function Spectate:Stop()
 	for _, c in ipairs(Spectate.Conns) do pcall(function() c:Disconnect() end) end
 	Spectate.Conns = {}
 	Spectate.Target = nil
+	clearSpecTags()
 	local cam = workspace.CurrentCamera
 	local ch = LocalPlayer.Character
 	local hum = ch and ch:FindFirstChildOfClass("Humanoid")
@@ -3569,6 +3625,7 @@ end
 function Spectate:Start(p)
 	for _, c in ipairs(Spectate.Conns) do pcall(function() c:Disconnect() end) end
 	Spectate.Conns = {}
+	clearSpecTags()
 	Spectate.Target = p
 	local function apply()
 		local cam = workspace.CurrentCamera
@@ -3585,7 +3642,19 @@ function Spectate:Start(p)
 		if Spectate.Target == p then apply() end
 	end))
 	table.insert(Spectate.Conns, Players.PlayerRemoving:Connect(function(q)
+		local tag = Spectate.Tags[q]
+		if tag then
+			pcall(function() tag:Destroy() end)
+			Spectate.Tags[q] = nil
+		end
 		if q == p then Spectate:Stop() end
+	end))
+	-- World nameplates for everyone else so the view still reads like being in the server
+	for _, pl in ipairs(Players:GetPlayers()) do
+		attachSpecTag(pl)
+	end
+	table.insert(Spectate.Conns, Players.PlayerAdded:Connect(function(pl)
+		if Spectate.Target then attachSpecTag(pl) end
 	end))
 	specNotify()
 end
