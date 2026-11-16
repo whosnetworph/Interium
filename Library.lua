@@ -2497,7 +2497,13 @@ function Library:CreateWindow(o)
 			CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y,
 			Parent = page,
 		})
-		pad(scroll, 1, 1, 1, 1)
+		local scrollPad = pad(scroll, 1, 1, 1, 1)
+		local function fitScroll()
+			local over = scroll.AbsoluteCanvasSize.Y > scroll.AbsoluteWindowSize.Y + 0.5
+			scrollPad.PaddingRight = UDim.new(0, over and 5 or 1)
+		end
+		scroll:GetPropertyChangedSignal("AbsoluteCanvasSize"):Connect(fitScroll)
+		scroll:GetPropertyChangedSignal("AbsoluteWindowSize"):Connect(fitScroll)
 		tab.Page, tab.Scroll, tab.Btn = page, scroll, tabBtn
 		local half = M.ColGap / 2
 		tab.LeftCol = new("Frame", { Size = UDim2.new(0.5, -half, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Parent = scroll })
@@ -3616,18 +3622,17 @@ local function buildPlayers(W)
 	local left = tab:AddSection("Players", "Left")
 	local right = tab:AddSection("Selected", "Right")
 	local custom = tab:AddSection("Custom", "Right")
-	local customNote = new("TextLabel", {
-		Size = UDim2.new(1, 0, 0, M.Row), Text = "No custom controls", Skin = { TextColor3 = "TextOff" }, Parent = custom.Content,
-	})
-	local function syncNote()
+	local customSec = custom.Content.Parent
+	customSec.Visible = false
+	local function syncCustom()
 		local n = 0
 		for _, c in ipairs(custom.Content:GetChildren()) do
-			if c ~= customNote and c:IsA("GuiObject") then n = n + 1 end
+			if c:IsA("GuiObject") then n = n + 1 end
 		end
-		customNote.Visible = n == 0
+		customSec.Visible = n > 0
 	end
-	custom.Content.ChildAdded:Connect(function() task.defer(syncNote) end)
-	custom.Content.ChildRemoved:Connect(function() task.defer(syncNote) end)
+	custom.Content.ChildAdded:Connect(function() task.defer(syncCustom) end)
+	custom.Content.ChildRemoved:Connect(function() task.defer(syncCustom) end)
 	Library.PlayerCustom, Library.PlayerTab = custom, tab
 	for _, fn in ipairs(Library._playerCustomQueue) do task.spawn(fn, custom, tab) end
 	Library._playerCustomQueue = {}
