@@ -73,7 +73,7 @@ local Library = {
 	Flags = {},
 	Options = {},
 	Searchable = {},
-	ToggleKey = Enum.KeyCode.Insert,
+	ToggleKey = Enum.KeyCode.LeftAlt,
 	Name = "Interium",
 	Folder = "Interium",
 	MenuVisible = true,
@@ -1435,7 +1435,7 @@ end
 
 function Elements:_reg(str, row)
 	if not self.Tab then return end
-	table.insert(Library.Searchable, { Text = str, Tab = self.Tab, Row = row, Reveal = self.Reveal })
+	table.insert(Library.Searchable, { Text = str, Tab = self.Tab, Row = row, Reveal = self.Reveal, Alive = self.Alive })
 end
 
 local function finish(self, obj, id, o, row, text)
@@ -1454,7 +1454,8 @@ end
 
 function Elements:AddToggle(id, o)
 	o = o or {}
-	local T = { Type = "Toggle", Text = o.Text or id or "Toggle", Value = o.Default == true, Callback = o.Callback, Changed = {} }
+	local host = self
+	local T = { Type = "Toggle", Text = o.Text or id or "Toggle", Value = o.Default == true, Callback = o.Callback, Changed = {}, _subs = {} }
 	local row = new("TextButton", { Size = UDim2.new(1, 0, 0, M.Row), Parent = self.Content })
 	local box = new("Frame", {
 		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(6, M.Row / 2), Size = UDim2.fromOffset(10, 10), BackgroundColor3 = Theme.Box, Parent = row,
@@ -1501,12 +1502,80 @@ function Elements:AddToggle(id, o)
 			task.delay(0.06, function() tween(box, { Size = UDim2.fromOffset(10, 10) }, 0.18, BACK) end)
 		end
 		if id then Library.Flags[id] = T.Value end
+		for _, f in ipairs(T._subs) do f() end
 		if not silent then fire(T, T.Value) end
 	end
 	function T:Serialize() return T.Value end
 	function T:Deserialize(d) T:SetValue(d == true) end
 	function T:AddColorPicker(cid, co) return attachPicker(getHolder(), cid, co) end
 	function T:AddKeybind(kid, ko) ko = ko or {}; ko.Text = ko.Text or T.Text; return attachKeybind(getHolder(), kid, ko) end
+
+	-- Options that slide open underneath this toggle while it is on.
+	-- Call it straight after AddToggle, then add elements to the returned container.
+	function T:AddSubOptions()
+		if T.SubOptions then return T.SubOptions end
+		local wrap = new("Frame", {
+			Size = UDim2.new(1, 0, 0, 0), BackgroundTransparency = 1, ClipsDescendants = true,
+			Visible = false, Parent = host.Content,
+		})
+		local inner = new("Frame", {
+			Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Parent = wrap,
+		})
+		pad(inner, 14, 0, 0, 0)
+		vlist(inner, M.Gap)
+		new("Frame", {
+			Position = UDim2.fromOffset(5, 1), Size = UDim2.new(0, 1, 1, -2),
+			Skin = { BackgroundColor3 = "Border" }, Parent = wrap,
+		})
+
+		local c = makeContainer(inner, host.Tab, host.PopupParent)
+		c.Reveal = host.Reveal
+		c.Alive = function() return T.Value and (not host.Alive or host.Alive()) end
+		T.SubOptions = c
+
+		local open, settled, token = false, true, 0
+		local function innerH() return inner.AbsoluteSize.Y end
+		inner:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+			if open and settled then wrap.Size = UDim2.new(1, 0, 0, innerH()) end
+		end)
+
+		local function apply(instant)
+			local want = T.Value
+			if want == open and not instant then return end
+			open = want
+			token = token + 1
+			local my = token
+			if want then
+				wrap.Visible = true
+				local h = innerH()
+				if instant or not Library.Animations then
+					settled = true
+					wrap.Size = UDim2.new(1, 0, 0, h)
+				else
+					settled = false
+					tween(wrap, { Size = UDim2.new(1, 0, 0, h) }, 0.22, QUINT)
+					task.delay(0.25, function()
+						if token == my then
+							settled = true
+							wrap.Size = UDim2.new(1, 0, 0, innerH())
+						end
+					end)
+				end
+			else
+				settled = false
+				if instant or not Library.Animations then
+					wrap.Size = UDim2.new(1, 0, 0, 0)
+					wrap.Visible = false
+				else
+					tween(wrap, { Size = UDim2.new(1, 0, 0, 0) }, 0.2, QUAD)
+					task.delay(0.22, function() if token == my and not open then wrap.Visible = false end end)
+				end
+			end
+		end
+		table.insert(T._subs, apply)
+		apply(true)
+		return c
+	end
 
 	return finish(self, T, id, o, row, T.Text)
 end
@@ -2502,7 +2571,7 @@ function Library:CreateWindow(o)
 			local px = math.floor(mp.X - grabOff.X)
 			local py = math.floor(mp.Y - grabOff.Y)
 
-			detachWin = new("Frame", {
+			detachWin = new("CanvasGroup", {
 				Name = "Detached_" .. name,
 				Size = UDim2.fromOffset(dw, dh),
 				Position = UDim2.fromOffset(px, py),
@@ -2545,6 +2614,7 @@ function Library:CreateWindow(o)
 			page.Visible = true
 			page.GroupTransparency = 0
 			tab.DetachWin = detachWin
+			detachWin.Visible = W.Visible
 
 			local function startMove(i)
 				if i.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
@@ -2678,7 +2748,7 @@ function Library:CreateWindow(o)
 		local n = 0
 		for _, e in ipairs(Library.Searchable) do
 			if n >= 8 then break end
-			if e.Text:lower():find(q, 1, true) and e.Row.Parent then
+			if e.Text:lower():find(q, 1, true) and e.Row.Parent and (not e.Alive or e.Alive()) then
 				n = n + 1
 				local b = makeItem(spanel, e.Text, M.Item, e.Tab.Name)
 				b.LayoutOrder = n
@@ -2783,6 +2853,37 @@ function Library:CreateWindow(o)
 	bind(sb, function() setMag(W.SearchOpen and Theme.Text or Theme.TextDim, true) end)
 
 	local function offsetPos(dy) return UDim2.new(W.Pos.X.Scale, W.Pos.X.Offset, W.Pos.Y.Scale, W.Pos.Y.Offset + dy) end
+	local function showDetached(t, v, instant)
+		local dw = t.DetachWin
+		if not dw then return end
+		local st = dw:FindFirstChildOfClass("UIStroke")
+		t._dtoken = (t._dtoken or 0) + 1
+		local my = t._dtoken
+		local anim = Library.Animations and not instant
+		if v then
+			dw.Visible = true
+			if anim then
+				dw.GroupTransparency = 1
+				if st then st.Transparency = 1 end
+				tween(dw, { GroupTransparency = 0 }, 0.3, QUAD)
+				if st then tween(st, { Transparency = 0 }, 0.3, QUAD) end
+			else
+				dw.GroupTransparency = 0
+				if st then st.Transparency = 0 end
+			end
+		else
+			if anim then
+				tween(dw, { GroupTransparency = 1 }, 0.2, QUAD)
+				if st then tween(st, { Transparency = 1 }, 0.2, QUAD) end
+				task.delay(0.22, function()
+					if t._dtoken == my and dw.Parent and not W.Visible then dw.Visible = false end
+				end)
+			else
+				dw.Visible = false
+			end
+		end
+	end
+
 	function W:SetVisible(v, instant)
 		if W.Visible == v and not instant then return end
 		W.Visible = v
@@ -2814,6 +2915,9 @@ function Library:CreateWindow(o)
 				track(tween(frameStroke, { Transparency = 1 }, 0.2, QUAD))
 				task.delay(0.24, function() if not W.Visible then frame.Visible = false end end)
 			end
+		end
+		for _, t in ipairs(W.Tabs) do
+			if t.Detached and t.DetachWin then showDetached(t, v, instant) end
 		end
 		KL.Refresh()
 	end
@@ -3497,10 +3601,36 @@ local function teleportTo(p)
 	mine.CFrame = theirs.CFrame * CFrame.new(0, 0, 3)
 end
 
+Library._playerCustomQueue = {}
+Library._selHooks = {}
+function Library:GetSelectedPlayer() return nil end
+function Library:OnPlayerSelected(fn) table.insert(Library._selHooks, fn) end
+-- fn(container, tab) runs once the Players tab's Custom frame exists
+function Library:OnPlayerCustom(fn)
+	if Library.PlayerCustom then task.spawn(fn, Library.PlayerCustom, Library.PlayerTab)
+	else table.insert(Library._playerCustomQueue, fn) end
+end
+
 local function buildPlayers(W)
 	local tab = W:AddTab("Players")
 	local left = tab:AddSection("Players", "Left")
 	local right = tab:AddSection("Selected", "Right")
+	local custom = tab:AddSection("Custom", "Right")
+	local customNote = new("TextLabel", {
+		Size = UDim2.new(1, 0, 0, M.Row), Text = "No custom controls", Skin = { TextColor3 = "TextOff" }, Parent = custom.Content,
+	})
+	local function syncNote()
+		local n = 0
+		for _, c in ipairs(custom.Content:GetChildren()) do
+			if c ~= customNote and c:IsA("GuiObject") then n = n + 1 end
+		end
+		customNote.Visible = n == 0
+	end
+	custom.Content.ChildAdded:Connect(function() task.defer(syncNote) end)
+	custom.Content.ChildRemoved:Connect(function() task.defer(syncNote) end)
+	Library.PlayerCustom, Library.PlayerTab = custom, tab
+	for _, fn in ipairs(Library._playerCustomQueue) do task.spawn(fn, custom, tab) end
+	Library._playerCustomQueue = {}
 
 	local LIST_MAX = 388
 	local slot = left:AddCustom(M.Item + 2)
@@ -3516,6 +3646,8 @@ local function buildPlayers(W)
 
 	local selected
 	local rows = {}
+	local function notifySel() for _, f in ipairs(Library._selHooks) do task.spawn(f, selected) end end
+	function Library:GetSelectedPlayer() return selected end
 
 	local head = right:AddCustom(44)
 	local avatarSlot = new("Frame", { Size = UDim2.fromOffset(44, 44), BackgroundTransparency = 1, Parent = head })
@@ -3562,7 +3694,7 @@ local function buildPlayers(W)
 
 	local function refreshSelected()
 		if not selected or not selected.Parent then
-			if selected then selected = nil end
+			if selected then selected = nil; notifySel() end
 			nameLbl.Text = "No player selected"
 			subLbl.Text = ""
 			avatar.Image = ""
@@ -3600,6 +3732,7 @@ local function buildPlayers(W)
 		end
 		for pl, r in pairs(rows) do r.Set(pl == p) end
 		refreshSelected()
+		notifySel()
 	end
 
 	local function rebuild()
@@ -3612,7 +3745,7 @@ local function buildPlayers(W)
 		end
 		table.sort(list, function(a, b) return a.DisplayName:lower() < b.DisplayName:lower() end)
 		empty.Visible = #list == 0
-		if selected and not table.find(list, selected) then selected = nil end
+		if selected and not table.find(list, selected) then selected = nil; notifySel() end
 		for i, p in ipairs(list) do
 			local label = p.DisplayName
 			if p.DisplayName ~= p.Name then label = label .. "  @" .. p.Name end
@@ -3634,7 +3767,7 @@ local function buildPlayers(W)
 	Spectate.Hooks[#Spectate.Hooks + 1] = refreshSelected
 	table.insert(Library._conns, Players.PlayerAdded:Connect(function() task.wait(0.1); rebuild() end))
 	table.insert(Library._conns, Players.PlayerRemoving:Connect(function(p)
-		if p == selected then selected = nil end
+		if p == selected then selected = nil; notifySel() end
 		task.defer(rebuild)
 	end))
 	rebuild()
