@@ -1221,7 +1221,11 @@ function PUI.Open(P, anchor)
 	PUI.SpeedSl:SetValue(P.Speed, true, true)
 	PUI.UpdateSwatches()
 	PUI.Sync()
-	openPopup(PUI.Frame, anchor, { Align = "left", Gap = 4 })
+	local nested = false
+	for _, pp in ipairs(Popups) do
+		if anchor:IsDescendantOf(pp.Frame) then nested = true break end
+	end
+	openPopup(PUI.Frame, anchor, { Align = "left", Gap = 4, Child = nested })
 end
 
 local function attachPicker(holder, id, o)
@@ -1355,7 +1359,7 @@ local function attachKeybind(holder, id, o)
 	local K = {
 		Type = "Keybind", Key = o.Default or "None", Mode = o.Mode or "Toggle", State = false,
 		ShowInList = o.ShowInList ~= false, Text = o.Text or id or "Keybind", Callback = o.Callback, Changed = {},
-		Id = id, NoConfig = o.NoConfig, Simple = o.Simple, OnKey = o.OnKey,
+		Id = id, NoConfig = o.NoConfig, Simple = o.Simple, OnKey = o.OnKey, Parent = o.Parent,
 	}
 	K.Value = K.State
 	local lbl = new("TextButton", { Size = UDim2.fromOffset(20, 14), LayoutOrder = #holder:GetChildren(), TextColor3 = Theme.TextDim, Parent = holder })
@@ -1371,18 +1375,34 @@ local function attachKeybind(holder, id, o)
 	end
 	bind(lbl, function() render(true) end)
 
+	-- A keybind attached to a toggle only works while that toggle is on.
+	-- Its value is the real "is the mechanism running" state.
+	function K:_eff()
+		local par = K.Parent
+		if par then
+			if not par.Value then return false end
+			if K.Key == "None" then return true end
+		end
+		return K.State
+	end
+	function K:_sync(silent)
+		local e = K:_eff()
+		if K.Value == e then return end
+		K.Value = e
+		if id then Library.Flags[id] = e end
+		KL.Refresh()
+		if not silent then fire(K, e) end
+	end
 	function K:SetState(s, silent)
 		if K.State == s then return end
 		K.State = s
-		K.Value = s
-		if id then Library.Flags[id] = s end
-		KL.Refresh()
-		if not silent then fire(K, s) end
+		K:_sync(silent)
 	end
 	function K:SetKey(k)
 		K.Key = k
 		K.Listening = false
 		render()
+		K:_sync()
 		KL.Refresh()
 		if K.OnKey then task.spawn(K.OnKey, k) end
 		Library:_touch()
@@ -1413,8 +1433,9 @@ local function attachKeybind(holder, id, o)
 	end
 
 	render(true)
-	if K.Mode == "Always" then K.State = true; K.Value = true end
-	if id then Library.Flags[id] = K.State end
+	if K.Mode == "Always" then K.State = true end
+	K.Value = K:_eff()
+	if id then Library.Flags[id] = K.Value end
 	register(id, K)
 	table.insert(Library._kb, K)
 	KL.Refresh()
@@ -1431,6 +1452,75 @@ local function makeHolder(row)
 		VerticalAlignment = Enum.VerticalAlignment.Center, Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder, Parent = h,
 	})
 	return h
+end
+
+local SETW = 196
+
+-- Gear icon + popup container. Returns a container: add any elements to it.
+local function attachSettings(holder, owner, so)
+	so = so or {}
+	local width = so.Width or SETW
+	local btn = new("TextButton", { Size = UDim2.fromOffset(12, 14), Text = "", LayoutOrder = #holder:GetChildren(), Parent = holder })
+	calib(btn)
+	local parts = {}
+	local ys, kx = { 3, 7, 11 }, { 8, 3, 7 }
+	for i = 1, 3 do
+		parts[#parts + 1] = new("Frame", { Position = UDim2.fromOffset(0, ys[i]), Size = UDim2.fromOffset(12, 1), BackgroundColor3 = Theme.TextDim, Parent = btn })
+		parts[#parts + 1] = new("Frame", { Position = UDim2.fromOffset(kx[i] - 1, ys[i] - 1), Size = UDim2.fromOffset(3, 3), BackgroundColor3 = Theme.TextDim, ZIndex = 2, Parent = btn })
+	end
+	local hovering, active = false, false
+	local function paint(animate)
+		local col = active and Theme.Accent or (hovering and Theme.TextHover or Theme.TextDim)
+		for _, f in ipairs(parts) do
+			if animate then tween(f, { BackgroundColor3 = col }, 0.15, QUAD) else f.BackgroundColor3 = col end
+		end
+	end
+	bind(btn, function() paint(false) end)
+	btn.MouseEnter:Connect(function() hovering = true; paint(true) end)
+	btn.MouseLeave:Connect(function() hovering = false; paint(true) end)
+
+	local root, panel = newPopup(width, PPAD * 2 + 10)
+	local content = new("Frame", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Parent = panel })
+	pad(content, PPAD, PPAD, PPAD, PPAD)
+	local layout = vlist(content, M.Gap)
+	local c = makeContainer(content, nil, root)
+	c.Button, c.Root = btn, root
+
+	local function refit()
+		local h = layout.AbsoluteContentSize.Y + PPAD * 2
+		if PopupOf[root].H ~= h then resizePopup(root, width, h, isOpen(root)) end
+	end
+	layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(refit)
+
+	btn.MouseButton1Click:Connect(function()
+		if isOpen(root) then closePopup(root) return end
+		refit()
+		active = true
+		paint(true)
+		openPopup(root, btn, { Align = "right", Gap = 4, OnClose = function() active = false; paint(true) end })
+		task.defer(refit)
+	end)
+
+	local oid = owner and owner.Id
+	if so.Hold then
+		owner.Hold = so.HoldDefault == true
+		if owner.Keybind and owner.Hold then owner.Keybind:SetMode("Hold") end
+		c.HoldToggle = c:AddToggle(oid and (oid .. "_hold") or nil, {
+			Text = "Hold to activate", Default = owner.Hold, NoConfig = oid == nil,
+			Callback = function(v)
+				owner.Hold = v
+				if owner.Keybind then owner.Keybind:SetMode(v and "Hold" or "Toggle") end
+			end,
+		})
+	end
+	if so.Animations then
+		owner.Animations = so.AnimationsDefault ~= false
+		c.AnimToggle = c:AddToggle(oid and (oid .. "_animations") or nil, {
+			Text = "Animations", Default = owner.Animations, NoConfig = oid == nil,
+			Callback = function(v) owner.Animations = v end,
+		})
+	end
+	return c
 end
 
 function Elements:_reg(str, row)
@@ -1503,12 +1593,34 @@ function Elements:AddToggle(id, o)
 		end
 		if id then Library.Flags[id] = T.Value end
 		for _, f in ipairs(T._subs) do f() end
+		if T.Keybind then
+			if not T.Value then T.Keybind.State = T.Keybind.Mode == "Always" end
+			T.Keybind:_sync(silent)
+			KL.Refresh()
+		end
 		if not silent then fire(T, T.Value) end
 	end
 	function T:Serialize() return T.Value end
 	function T:Deserialize(d) T:SetValue(d == true) end
 	function T:AddColorPicker(cid, co) return attachPicker(getHolder(), cid, co) end
-	function T:AddKeybind(kid, ko) ko = ko or {}; ko.Text = ko.Text or T.Text; return attachKeybind(getHolder(), kid, ko) end
+	function T:AddKeybind(kid, ko)
+		ko = ko or {}
+		ko.Text = ko.Text or T.Text
+		ko.Parent = T
+		local k = attachKeybind(getHolder(), kid, ko)
+		T.Keybind = k
+		if T.Hold ~= nil then k:SetMode(T.Hold and "Hold" or "Toggle") end
+		return k
+	end
+	-- true only when the toggle is on AND (if it has a keybind) the keybind is currently engaged
+	function T:IsActive()
+		if not T.Value then return false end
+		if T.Keybind then return T.Keybind.Value == true end
+		return true
+	end
+	-- gear button next to the toggle that opens a small settings popup
+	-- opts: Hold = true (adds "Hold to activate"), Animations = true (adds "Animations")
+	function T:AddSettings(so) return attachSettings(getHolder(), T, so) end
 
 	-- Options that slide open underneath this toggle while it is on.
 	-- Call it straight after AddToggle, then add elements to the returned container.
@@ -1658,6 +1770,202 @@ function Elements:AddSlider(id, o)
 	return finish(self, S, id, o, row, text)
 end
 
+function Elements:AddRangeSlider(id, o)
+	o = o or {}
+	local S = {
+		Type = "RangeSlider", Min = o.Min or 0, Max = o.Max or 100, Rounding = o.Rounding or 0,
+		Suffix = o.Suffix or "", Prefix = o.Prefix or "", Callback = o.Callback, Changed = {},
+	}
+	local dv = o.Default or {}
+	S.Low = math.clamp(dv.Min or dv[1] or S.Min, S.Min, S.Max)
+	S.High = math.clamp(dv.Max or dv[2] or S.Max, S.Min, S.Max)
+	S.Value = { Min = S.Low, Max = S.High }
+	local text = o.Text or id or "Range"
+	local row = new("Frame", { Size = UDim2.new(1, 0, 0, M.Slider), BackgroundTransparency = 1, Parent = self.Content })
+	new("TextLabel", { Size = UDim2.new(0.5, 0, 0, M.Label), Text = text, TextXAlignment = Enum.TextXAlignment.Left, Parent = row })
+	local val = new("TextLabel", { Size = UDim2.new(1, 0, 0, M.Label), TextXAlignment = Enum.TextXAlignment.Right, Parent = row })
+	local track = new("Frame", {
+		Position = UDim2.fromOffset(1, M.Label + M.LabelGap + 1), Size = UDim2.new(1, -2, 0, 5), Skin = { BackgroundColor3 = "Element" }, Parent = row,
+	})
+	local ts = stroke(track, "Border")
+	local fill = new("Frame", { Size = UDim2.fromScale(1, 1), Skin = { BackgroundColor3 = "Accent" }, Parent = track })
+	local function handle()
+		return new("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(3, 11), ZIndex = 2,
+			Skin = { BackgroundColor3 = "Text" }, Parent = track,
+		})
+	end
+	local h1, h2 = handle(), handle()
+	local hit = new("TextButton", { Position = UDim2.fromOffset(0, M.Label), Size = UDim2.new(1, 0, 0, M.Slider - M.Label), Parent = row })
+
+	local function fmt(v) return S.Prefix .. fmtNum(v, S.Rounding) .. S.Suffix end
+	local hovering, dragging = false, false
+	local function border(instant)
+		local c = (hovering or dragging) and Theme.BorderHover or Theme.Border
+		if instant then ts.Color = c else tween(ts, { Color = c }, 0.14, QUAD) end
+	end
+	bind(row, function() border(true) end)
+	hit.MouseEnter:Connect(function() hovering = true; border() end)
+	hit.MouseLeave:Connect(function() hovering = false; border() end)
+
+	local function render(mode)
+		local rng = math.max(S.Max - S.Min, 1e-9)
+		local a1, a2 = (S.Low - S.Min) / rng, (S.High - S.Min) / rng
+		val.Text = fmt(S.Low) .. " - " .. fmt(S.High)
+		local fp, fs = UDim2.fromScale(a1, 0), UDim2.fromScale(math.max(a2 - a1, 0), 1)
+		local p1, p2 = UDim2.fromScale(a1, 0.5), UDim2.fromScale(a2, 0.5)
+		if mode == "instant" then
+			fill.Position, fill.Size, h1.Position, h2.Position = fp, fs, p1, p2
+		else
+			local t, st = mode == "drag" and 0.07 or 0.3, mode == "drag" and QUAD or QUINT
+			tween(fill, { Position = fp, Size = fs }, t, st)
+			tween(h1, { Position = p1 }, t, st)
+			tween(h2, { Position = p2 }, t, st)
+		end
+	end
+
+	local function snap(v)
+		local m = 10 ^ S.Rounding
+		return math.clamp(math.floor(v * m + 0.5) / m, S.Min, S.Max)
+	end
+	local function setRange(lo, hi, silent, mode)
+		lo, hi = snap(lo), snap(hi)
+		if lo > hi then lo, hi = hi, lo end
+		S.Low, S.High = lo, hi
+		S.Value = { Min = lo, Max = hi }
+		render(mode)
+		if id then Library.Flags[id] = S.Value end
+		if not silent then fire(S, S.Value) end
+	end
+	function S:SetRange(lo, hi, silent, instant) setRange(lo, hi, silent, instant and "instant" or "tween") end
+	function S:SetValue(v, silent, instant)
+		if type(v) == "table" then S:SetRange(v.Min or v[1] or S.Low, v.Max or v[2] or S.High, silent, instant) end
+	end
+	function S:Serialize() return { S.Low, S.High } end
+	function S:Deserialize(d) if type(d) == "table" and d[1] and d[2] then S:SetRange(d[1], d[2]) end end
+
+	local function xToVal(x)
+		local a = math.clamp((x - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1), 0, 1)
+		return S.Min + (S.Max - S.Min) * a
+	end
+	hit.InputBegan:Connect(function(i)
+		if not isPress(i) then return end
+		calibrate(hit, i)
+		dragging = true
+		border()
+		local v = xToVal(mouse().X)
+		local which
+		if S.Low == S.High then which = v < S.Low and "low" or "high"
+		else which = math.abs(v - S.Low) <= math.abs(v - S.High) and "low" or "high" end
+		local function apply(x)
+			local nv = xToVal(x)
+			if which == "low" then setRange(math.min(nv, S.High), S.High, false, "drag")
+			else setRange(S.Low, math.max(nv, S.Low), false, "drag") end
+		end
+		apply(mouse().X)
+		Library._drag = function(mp) apply(mp.X) end
+		Library._dragEnd = function() dragging = false; border() end
+	end)
+
+	render("instant")
+	return finish(self, S, id, o, row, text)
+end
+
+function Elements:AddNumberInput(id, o)
+	o = o or {}
+	local N = {
+		Type = "NumberInput", Min = o.Min or -math.huge, Max = o.Max or math.huge, Step = o.Step or 1,
+		Rounding = o.Rounding or 0, Suffix = o.Suffix or "", Prefix = o.Prefix or "", Callback = o.Callback, Changed = {},
+	}
+	local d = o.Default
+	if d == nil then d = (N.Min > -math.huge) and N.Min or 0 end
+	N.Value = math.clamp(d, N.Min, N.Max)
+	local text = o.Text or id or "Number"
+	local BW = o.Width or 96
+	local BH = M.Box - 2
+	local row = new("Frame", { Size = UDim2.new(1, 0, 0, M.Box), BackgroundTransparency = 1, Parent = self.Content })
+	new("TextLabel", {
+		Size = UDim2.new(1, -BW - 6, 1, 0), Text = text, TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd, Parent = row,
+	})
+	local fr = new("Frame", {
+		AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -1, 0.5, 0), Size = UDim2.fromOffset(BW - 2, BH),
+		Skin = { BackgroundColor3 = "Element" }, Parent = row,
+	})
+	local st = stroke(fr, "Border")
+	local minus = new("TextButton", { Size = UDim2.fromOffset(18, BH), Text = "-", Skin = { TextColor3 = "TextDim" }, Parent = fr })
+	local plus = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0), Position = UDim2.fromScale(1, 0), Size = UDim2.fromOffset(18, BH), Text = "+",
+		Skin = { TextColor3 = "TextDim" }, Parent = fr,
+	})
+	local tb = new("TextBox", {
+		Position = UDim2.fromOffset(18, 0), Size = UDim2.new(1, -36, 1, 0), Text = "", ClearTextOnFocus = false,
+		TextXAlignment = Enum.TextXAlignment.Center, Skin = { TextColor3 = "TextMid" }, Parent = fr,
+	})
+
+	local function fmt(v) return N.Prefix .. fmtNum(v, N.Rounding) .. N.Suffix end
+	local function show()
+		tb.Text = tb:IsFocused() and fmtNum(N.Value, N.Rounding) or fmt(N.Value)
+	end
+	local hovering = false
+	local function paint(instant)
+		local focused = tb:IsFocused()
+		local bc = focused and Theme.Accent or (hovering and Theme.BorderHover or Theme.Border)
+		if instant then st.Color = bc else tween(st, { Color = bc }, 0.15, QUAD) end
+	end
+	bind(row, function() paint(true) end)
+	fr.MouseEnter:Connect(function() hovering = true; paint() end)
+	fr.MouseLeave:Connect(function() hovering = false; paint() end)
+
+	local function commit(v, silent)
+		local m = 10 ^ N.Rounding
+		v = math.clamp(math.floor(v * m + 0.5) / m, N.Min, N.Max)
+		N.Value = v
+		show()
+		if id then Library.Flags[id] = v end
+		if not silent then fire(N, v) end
+	end
+	function N:SetValue(v, silent) if type(v) == "number" then commit(v, silent) end end
+	function N:Serialize() return N.Value end
+	function N:Deserialize(x) if type(x) == "number" then N:SetValue(x) end end
+
+	tb.Focused:Connect(function() show(); paint() end)
+	tb.FocusLost:Connect(function()
+		local v = tonumber((tb.Text:gsub("[^%d%.%-]", "")))
+		if v then commit(v) else show() end
+		paint()
+	end)
+
+	local holdToken
+	local function hook(btn, dir)
+		btn.MouseEnter:Connect(function() tween(btn, { TextColor3 = Theme.Text }, 0.1, QUAD) end)
+		btn.MouseLeave:Connect(function()
+			holdToken = nil
+			tween(btn, { TextColor3 = Theme.TextDim }, 0.12, QUAD)
+		end)
+		btn.InputBegan:Connect(function(i)
+			if not isPress(i) then return end
+			calibrate(btn, i)
+			commit(N.Value + dir * N.Step)
+			local token = {}
+			holdToken = token
+			Library._dragEnd = function() holdToken = nil end
+			task.spawn(function()
+				task.wait(0.4)
+				while holdToken == token and btn.Parent do
+					commit(N.Value + dir * N.Step)
+					task.wait(0.06)
+				end
+			end)
+		end)
+	end
+	hook(minus, -1)
+	hook(plus, 1)
+
+	show()
+	return finish(self, N, id, o, row, text)
+end
+
 function Elements:AddDropdown(id, o)
 	o = o or {}
 	local text = o.Text or id or "Dropdown"
@@ -1802,11 +2110,97 @@ function Elements:AddLabel(str, right)
 	function L:Flash() flashRow(row) end
 	function L:AddColorPicker(cid, co) holder = holder or makeHolder(row); return attachPicker(holder, cid, co) end
 	function L:AddKeybind(kid, ko) holder = holder or makeHolder(row); ko = ko or {}; ko.Text = ko.Text or str; return attachKeybind(holder, kid, ko) end
+	function L:AddSettings(so) holder = holder or makeHolder(row); return attachSettings(holder, L, so) end
 	L.Row = row
 	self:_reg(str, row)
 	return L
 end
 
+
+local ESPFx = {}
+do
+	local Defaults = {
+		esp_box = true, esp_box_style = "Full", esp_box_outline = true, esp_box_fill = true,
+		esp_fill_effect = "Breathing", esp_fill_alpha = 35, esp_fill_speed = 100, esp_box_animations = true,
+		esp_skeleton = false, esp_skeleton_thick = 1,
+		esp_health = true, esp_health_style = "Gradient", esp_health_side = "Left", esp_health_text = false,
+		esp_health_animations = true,
+		esp_name = true, esp_name_source = "Display name", esp_name_size = 12, esp_distance = true,
+		esp_range = { Min = 0, Max = 1500 }, esp_hide_friendly = false, esp_status_color = false,
+	}
+	ESPFx.Defaults = Defaults
+	local function flag(k, d)
+		local v = Library.Flags[k]
+		if v == nil then v = Defaults[k] end
+		if v == nil then v = d end
+		return v
+	end
+	local function colorFlag(k, d)
+		local v = Library.Flags[k]
+		if typeof(v) == "Color3" then return v end
+		return d
+	end
+	ESPFx.Flag, ESPFx.Color = flag, colorFlag
+	local KP = ColorSequenceKeypoint.new
+
+	local function hueLerp(a, b, t)
+		local h1, s1, v1 = a:ToHSV()
+		local h2, s2, v2 = b:ToHSV()
+		local dh = h2 - h1
+		if dh > 0.5 then dh = dh - 1 elseif dh < -0.5 then dh = dh + 1 end
+		return Color3.fromHSV((h1 + dh * t) % 1, s1 + (s2 - s1) * t, v1 + (v2 - v1) * t)
+	end
+
+	-- box fill: Solid / Breathing / Pulse / Gradient / Wave / Rainbow
+	function ESPFx.Fill(frame, grad, t)
+		local effect = flag("esp_fill_effect", "Breathing")
+		local c1 = colorFlag("esp_fill_color", Theme.Accent)
+		local c2 = colorFlag("esp_fill_color2", Color3.fromRGB(110, 70, 220))
+		local alpha = flag("esp_fill_alpha", 35) / 100
+		local ts = t * (flag("esp_fill_speed", 100) / 100)
+		local anim = flag("esp_box_animations", true) ~= false
+		local b = anim and (math.sin(ts * 2.2) * 0.5 + 0.5) or 0
+		local seq, trans, off = nil, 1 - alpha, Vector2.zero
+		if effect == "Solid" then
+			seq = ColorSequence.new(c1)
+		elseif effect == "Breathing" then
+			seq = ColorSequence.new(c1:Lerp(c2, b), c2:Lerp(c1, b))
+			trans = 1 - alpha * (anim and (0.3 + 0.7 * b) or 1)
+		elseif effect == "Pulse" then
+			local pl = anim and math.abs(math.sin(ts * 3)) ^ 3 or 1
+			seq = ColorSequence.new(c1, c2)
+			trans = 1 - alpha * (0.15 + 0.85 * pl)
+		elseif effect == "Gradient" then
+			seq = ColorSequence.new(c1, c2)
+			trans = 1 - alpha * (anim and (0.8 + 0.2 * b) or 1)
+		elseif effect == "Wave" then
+			seq = ColorSequence.new({ KP(0, c1), KP(0.5, c2), KP(1, c1) })
+			off = Vector2.new(0, anim and math.sin(ts * 1.4) * 0.5 or 0)
+		else
+			local h = anim and (ts * 0.12) % 1 or 0.6
+			seq = ColorSequence.new(Color3.fromHSV(h, 0.75, 1), Color3.fromHSV((h + 0.22) % 1, 0.75, 1))
+			trans = 1 - alpha * (anim and (0.55 + 0.45 * b) or 1)
+		end
+		frame.BackgroundTransparency = math.clamp(trans, 0, 1)
+		grad.Color = seq
+		grad.Offset = off
+	end
+
+	-- health bar colours: Gradient (anchored to the full bar) / Dynamic / Solid
+	function ESPFx.Health(frame, grad, frac)
+		local style = flag("esp_health_style", "Gradient")
+		local hi = colorFlag("esp_hp_high", Color3.fromRGB(70, 220, 110))
+		local lo = colorFlag("esp_hp_low", Color3.fromRGB(235, 65, 75))
+		if style == "Gradient" then
+			grad.Color = ColorSequence.new({ KP(0, hi), KP(0.5, hueLerp(hi, lo, 0.5)), KP(1, lo) })
+		elseif style == "Dynamic" then
+			local c = hueLerp(lo, hi, frac)
+			grad.Color = ColorSequence.new(c, c:Lerp(Color3.new(0, 0, 0), 0.3))
+		else
+			grad.Color = ColorSequence.new(hi)
+		end
+	end
+end
 
 function Elements:AddESPPreview(o)
 	o = o or {}
@@ -2079,6 +2473,8 @@ function Elements:AddESPPreview(o)
 	local overlay = new("Frame", {
 		Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ClipsDescendants = true, ZIndex = 5, Parent = slot,
 	})
+	local boxFill = new("Frame", { BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 1, Visible = false, Parent = overlay })
+	local boxFillGrad = new("UIGradient", { Rotation = 90, Parent = boxFill })
 	local box = new("Frame", { BackgroundTransparency = 1, Visible = false, Parent = overlay })
 	local boxStroke = stroke(box, "Accent", 1)
 	local nameLbl = new("TextLabel", {
@@ -2089,10 +2485,15 @@ function Elements:AddESPPreview(o)
 		Size = UDim2.fromOffset(3, 40), BackgroundColor3 = Color3.fromRGB(28, 28, 32), Visible = false, Parent = overlay,
 	})
 	stroke(hpBg, "BorderDark")
-	local hpFill = new("Frame", {
+	local hpClip = new("Frame", {
 		AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.fromScale(1, 0.78),
-		Skin = { BackgroundColor3 = "Accent" }, Parent = hpBg,
+		BackgroundTransparency = 1, ClipsDescendants = true, Parent = hpBg,
 	})
+	local hpFill = new("Frame", {
+		AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0, 40),
+		BackgroundColor3 = Color3.new(1, 1, 1), Parent = hpClip,
+	})
+	local hpGrad = new("UIGradient", { Rotation = 90, Parent = hpFill })
 	local skLines = {}
 	local function ensureLines(n)
 		while #skLines < n do
@@ -2168,18 +2569,27 @@ function Elements:AddESPPreview(o)
 		local col = Theme.Accent
 		local cFlag = Library.Flags[flags.Color]
 		if typeof(cFlag) == "Color3" then col = cFlag end
-		local showBox = Library.Flags[flags.Box] == true
-		local showName = Library.Flags[flags.Name] == true
-		local showHp = Library.Flags[flags.Health] == true
-		local showSk = Library.Flags[flags.Skeleton] == true
+		local showBox = ESPFx.Flag(flags.Box, false) == true
+		local showName = ESPFx.Flag(flags.Name, false) == true
+		local showHp = ESPFx.Flag(flags.Health, false) == true
+		local showSk = ESPFx.Flag(flags.Skeleton, false) == true
 
 		if showBox and any and maxX > minX then
 			box.Visible = true
 			box.Position = UDim2.fromOffset(math.floor(minX), math.floor(minY))
 			box.Size = UDim2.fromOffset(math.max(1, math.floor(maxX - minX)), math.max(1, math.floor(maxY - minY)))
 			boxStroke.Color = col
+			if ESPFx.Flag("esp_box_fill", true) ~= false then
+				boxFill.Visible = true
+				boxFill.Position = box.Position
+				boxFill.Size = box.Size
+				ESPFx.Fill(boxFill, boxFillGrad, os.clock())
+			else
+				boxFill.Visible = false
+			end
 		else
 			box.Visible = false
+			boxFill.Visible = false
 		end
 		if showName and any then
 			nameLbl.Visible = true
@@ -2195,9 +2605,12 @@ function Elements:AddESPPreview(o)
 		if showHp and any then
 			hpBg.Visible = true
 			local h = math.max(16, maxY - minY)
-			hpBg.Size = UDim2.fromOffset(3, math.floor(h))
-			hpBg.Position = UDim2.fromOffset(math.clamp(math.floor(minX - 6), 0, math.max(0, vs.X - 3)), math.floor(minY))
-			hpFill.BackgroundColor3 = col
+			hpBg.Size = UDim2.fromOffset(4, math.floor(h))
+			hpBg.Position = UDim2.fromOffset(math.clamp(math.floor(minX - 8), 0, math.max(0, vs.X - 4)), math.floor(minY))
+			local frac = 0.55 + 0.4 * math.sin(os.clock() * 0.8)
+			hpClip.Size = UDim2.fromScale(1, frac)
+			hpFill.Size = UDim2.new(1, 0, 0, math.floor(h))
+			ESPFx.Health(hpFill, hpGrad, frac)
 		else
 			hpBg.Visible = false
 		end
@@ -2287,15 +2700,9 @@ function Elements:AddListbox(id, o)
 end
 
 local function newSectionFrame(column, order)
-	-- Outer wrap is transparent; the panel is inset 1px so the border is drawn fully
-	-- inside the column and cannot be clipped by the scroll frame / body ClipsDescendants.
-	local wrap = new("Frame", {
-		Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
-		LayoutOrder = order, Parent = column,
-	})
 	local sec = new("Frame", {
-		Position = UDim2.fromOffset(1, 0), Size = UDim2.new(1, -2, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
-		Skin = { BackgroundColor3 = "Section" }, Parent = wrap,
+		Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, Skin = { BackgroundColor3 = "Section" },
+		LayoutOrder = order, Parent = column,
 	})
 	stroke(sec, "Border")
 	vlist(sec, 0)
@@ -2503,18 +2910,12 @@ function Library:CreateWindow(o)
 			CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y,
 			Parent = page,
 		})
-		-- Extra pad keeps section strokes clear of the scroll clip edge / scrollbar.
-		local scrollPad = pad(scroll, 2, 2, 2, 2)
-		local function fitScroll()
-			local over = scroll.AbsoluteCanvasSize.Y > scroll.AbsoluteWindowSize.Y + 0.5
-			scrollPad.PaddingRight = UDim.new(0, over and 6 or 2)
-		end
-		scroll:GetPropertyChangedSignal("AbsoluteCanvasSize"):Connect(fitScroll)
-		scroll:GetPropertyChangedSignal("AbsoluteWindowSize"):Connect(fitScroll)
+		pad(scroll, 1, 1, 1, 1)
 		tab.Page, tab.Scroll, tab.Btn = page, scroll, tabBtn
 		local half = M.ColGap / 2
-		tab.LeftCol = new("Frame", { Size = UDim2.new(0.5, -half - 1, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Parent = scroll })
-		tab.RightCol = new("Frame", { Position = UDim2.new(0.5, half, 0, 0), Size = UDim2.new(0.5, -half - 1, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Parent = scroll })
+		tab.LeftCol = new("Frame", { Position = UDim2.fromOffset(2, 0), Size = UDim2.new(0.5, -half - 2, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Parent = scroll })
+		-- Symmetric widths so right section UIStroke is not clipped
+		tab.RightCol = new("Frame", { Position = UDim2.new(0.5, half, 0, 0), Size = UDim2.new(0.5, -half - 2, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Parent = scroll })
 		vlist(tab.LeftCol, M.ColGap)
 		vlist(tab.RightCol, M.ColGap)
 
@@ -3062,8 +3463,8 @@ local klRowsByKey = {}
 function KL.Refresh()
 	local entries = { { Id = "__menu", Name = "Menu", Key = Library.ToggleKey.Name, Active = Library.MenuVisible } }
 	for _, K in ipairs(Library._kb) do
-		if K.ShowInList and K.Key ~= "None" and not K.Simple then
-			entries[#entries + 1] = { Id = K, Name = K.Text, Key = K.Key, Active = K.State }
+		if K.ShowInList and K.Key ~= "None" and not K.Simple and (not K.Parent or K.Parent.Value) then
+			entries[#entries + 1] = { Id = K, Name = K.Text, Key = K.Key, Active = K.Value }
 		end
 	end
 	local used = {}
@@ -3214,7 +3615,9 @@ conn(UIS.InputBegan:Connect(function(i, gp)
 	if not n then return end
 	for _, kb in ipairs(Library._kb) do
 		if kb.Key == n and not kb.Simple then
-			if kb.Mode == "Toggle" then kb:SetState(not kb.State)
+			if kb.Parent and not kb.Parent.Value then
+				-- parent toggle is off: the keybind does nothing
+			elseif kb.Mode == "Toggle" then kb:SetState(not kb.State)
 			elseif kb.Mode == "Hold" then kb:SetState(true) end
 		end
 	end
@@ -3558,63 +3961,14 @@ function Library:_touch()
 	end)
 end
 
-local Spectate = { Target = nil, Conns = {}, Hooks = {}, Tags = {} }
+local Spectate = { Target = nil, Conns = {}, Hooks = {} }
 
 local function specNotify() for _, f in ipairs(Spectate.Hooks) do task.spawn(f) end end
-
-local function clearSpecTags()
-	for _, bb in pairs(Spectate.Tags) do
-		pcall(function() bb:Destroy() end)
-	end
-	Spectate.Tags = {}
-end
-
--- Nameplates above every other player while spectating (camera is no longer on your character).
-local function mountSpecTag(p, ch)
-	if not Spectate.Target or p == LocalPlayer then return end
-	local head = ch:FindFirstChild("Head")
-	if not head then
-		head = ch:WaitForChild("Head", 5)
-	end
-	if not head or not Spectate.Target then return end
-	local old = Spectate.Tags[p]
-	if old then pcall(function() old:Destroy() end) end
-	local bb = Instance.new("BillboardGui")
-	bb.Name = "InteriumSpecTag"
-	bb.AlwaysOnTop = true
-	bb.Size = UDim2.fromOffset(220, 28)
-	bb.StudsOffset = Vector3.new(0, 2.6, 0)
-	bb.MaxDistance = 1000
-	bb.Adornee = head
-	bb.Parent = head
-	local lbl = Instance.new("TextLabel")
-	lbl.BackgroundTransparency = 1
-	lbl.Size = UDim2.fromScale(1, 1)
-	lbl.Font = Enum.Font.Code
-	lbl.TextSize = 14
-	lbl.TextColor3 = Theme.Text
-	lbl.TextStrokeTransparency = 0.45
-	lbl.TextStrokeColor3 = Color3.new(0, 0, 0)
-	lbl.Text = (p.DisplayName ~= p.Name) and (p.DisplayName .. "  @" .. p.Name) or p.DisplayName
-	lbl.Parent = bb
-	Spectate.Tags[p] = bb
-end
-
-local function attachSpecTag(p)
-	if p == LocalPlayer then return end
-	if p.Character then
-		task.spawn(mountSpecTag, p, p.Character)
-	end
-	table.insert(Spectate.Conns, p.CharacterAdded:Connect(function(ch)
-		task.spawn(mountSpecTag, p, ch)
-	end))
-end
 
 function Spectate:Stop()
 	for _, c in ipairs(Spectate.Conns) do pcall(function() c:Disconnect() end) end
 	Spectate.Conns = {}
 	Spectate.Target = nil
-	clearSpecTags()
 	local cam = workspace.CurrentCamera
 	local ch = LocalPlayer.Character
 	local hum = ch and ch:FindFirstChildOfClass("Humanoid")
@@ -3625,7 +3979,6 @@ end
 function Spectate:Start(p)
 	for _, c in ipairs(Spectate.Conns) do pcall(function() c:Disconnect() end) end
 	Spectate.Conns = {}
-	clearSpecTags()
 	Spectate.Target = p
 	local function apply()
 		local cam = workspace.CurrentCamera
@@ -3642,19 +3995,7 @@ function Spectate:Start(p)
 		if Spectate.Target == p then apply() end
 	end))
 	table.insert(Spectate.Conns, Players.PlayerRemoving:Connect(function(q)
-		local tag = Spectate.Tags[q]
-		if tag then
-			pcall(function() tag:Destroy() end)
-			Spectate.Tags[q] = nil
-		end
 		if q == p then Spectate:Stop() end
-	end))
-	-- World nameplates for everyone else so the view still reads like being in the server
-	for _, pl in ipairs(Players:GetPlayers()) do
-		attachSpecTag(pl)
-	end
-	table.insert(Spectate.Conns, Players.PlayerAdded:Connect(function(pl)
-		if Spectate.Target then attachSpecTag(pl) end
 	end))
 	specNotify()
 end
@@ -3665,6 +4006,391 @@ end
 
 table.insert(Library._onUnload, function() Spectate:Stop() end)
 Library.Spectate = Spectate
+
+-- ===================================================================
+-- Built-in ESP (screen-space, no Drawing API needed). Optional: leave
+-- "Enable built-in ESP" off and run your own, the flags stay readable.
+-- ===================================================================
+do
+	local ESP = { Objects = {}, Enabled = false, Defaults = ESPFx.Defaults, _shown = false }
+	Library.ESP = ESP
+	local F, C = ESPFx.Flag, ESPFx.Color
+	local BLACK, WHITE = Color3.new(0, 0, 0), Color3.new(1, 1, 1)
+	local STATUS_COL = { Friendly = STATUS_COLOR.Friendly, Enemy = STATUS_COLOR.Enemy }
+
+	local ESPGui = new("ScreenGui", {
+		Name = HttpService:GenerateGUID(false), ResetOnSpawn = false, IgnoreGuiInset = true,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 9000,
+	})
+	ESPGui:SetAttribute("InteriumUI", true)
+	if syn and syn.protect_gui then pcall(syn.protect_gui, ESPGui) end
+	do
+		local ok = pcall(function() ESPGui.Parent = Gui.Parent end)
+		if not ok or not ESPGui.Parent then ESPGui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
+	end
+	table.insert(Library._onUnload, function() pcall(function() ESPGui:Destroy() end) end)
+
+	local R15 = {
+		{ "Head", "UpperTorso" }, { "UpperTorso", "LowerTorso" },
+		{ "UpperTorso", "LeftUpperArm" }, { "LeftUpperArm", "LeftLowerArm" }, { "LeftLowerArm", "LeftHand" },
+		{ "UpperTorso", "RightUpperArm" }, { "RightUpperArm", "RightLowerArm" }, { "RightLowerArm", "RightHand" },
+		{ "LowerTorso", "LeftUpperLeg" }, { "LeftUpperLeg", "LeftLowerLeg" }, { "LeftLowerLeg", "LeftFoot" },
+		{ "LowerTorso", "RightUpperLeg" }, { "RightUpperLeg", "RightLowerLeg" }, { "RightLowerLeg", "RightFoot" },
+	}
+	local R6 = { { "Head", "Torso" }, { "Torso", "Left Arm" }, { "Torso", "Right Arm" }, { "Torso", "Left Leg" }, { "Torso", "Right Leg" } }
+
+	local function outline(parent, trans)
+		return new("UIStroke", {
+			Thickness = 1, Color = BLACK, Transparency = trans or 0.35,
+			ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = parent,
+		})
+	end
+
+	local function newObject(p)
+		local O = { Player = p, HpDisp = 1, Bones = {}, Corners = {}, CornerStrokes = {} }
+		local root = new("Frame", { Name = p.Name, Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Visible = false, Parent = ESPGui })
+		O.Root = root
+		O.Fill = new("Frame", { BackgroundColor3 = WHITE, BackgroundTransparency = 1, Visible = false, Parent = root })
+		O.FillGrad = new("UIGradient", { Rotation = 90, Parent = O.Fill })
+		O.Outer = new("Frame", { BackgroundTransparency = 1, Visible = false, Parent = root })
+		outline(O.Outer)
+		O.Inner = new("Frame", { BackgroundTransparency = 1, Visible = false, Parent = root })
+		outline(O.Inner)
+		O.Box = new("Frame", { BackgroundTransparency = 1, Visible = false, Parent = root })
+		O.BoxStroke = new("UIStroke", { Thickness = 1, Color = WHITE, ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = O.Box })
+		for i = 1, 8 do
+			local f = new("Frame", { BackgroundColor3 = WHITE, Visible = false, Parent = root })
+			O.CornerStrokes[i] = outline(f)
+			O.Corners[i] = f
+		end
+		O.HpBg = new("Frame", { BackgroundColor3 = Color3.fromRGB(10, 10, 12), BackgroundTransparency = 0.25, Visible = false, Parent = root })
+		outline(O.HpBg, 0.2)
+		O.HpClip = new("Frame", {
+			AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.fromScale(1, 1),
+			BackgroundTransparency = 1, ClipsDescendants = true, Parent = O.HpBg,
+		})
+		O.HpFill = new("Frame", {
+			AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0, 40),
+			BackgroundColor3 = WHITE, Parent = O.HpClip,
+		})
+		O.HpGrad = new("UIGradient", { Rotation = 90, Parent = O.HpFill })
+		O.HpText = new("TextLabel", { Size = UDim2.fromOffset(30, 12), TextSize = 10, TextStrokeTransparency = 0.4, Visible = false, Parent = root })
+		O.Name = new("TextLabel", {
+			Size = UDim2.fromOffset(220, 14), AnchorPoint = Vector2.new(0.5, 1), TextStrokeTransparency = 0.4,
+			TextXAlignment = Enum.TextXAlignment.Center, Visible = false, Parent = root,
+		})
+		O.Dist = new("TextLabel", {
+			Size = UDim2.fromOffset(120, 12), AnchorPoint = Vector2.new(0.5, 0), TextSize = 10, TextStrokeTransparency = 0.4,
+			TextXAlignment = Enum.TextXAlignment.Center, Visible = false, Parent = root,
+		})
+		return O
+	end
+
+	local function rect(f, x, y, w, h)
+		f.Position = UDim2.fromOffset(x, y)
+		f.Size = UDim2.fromOffset(w, h)
+	end
+
+	local function getBones(O, char, hum)
+		local now = os.clock()
+		if O.BoneChar ~= char or now - (O.BoneAt or 0) > 2 then
+			O.BoneChar, O.BoneAt = char, now
+			local list = hum.RigType == Enum.HumanoidRigType.R6 and R6 or R15
+			local out = {}
+			for _, pr in ipairs(list) do
+				local a, b = char:FindFirstChild(pr[1]), char:FindFirstChild(pr[2])
+				if a and b and a:IsA("BasePart") and b:IsA("BasePart") then out[#out + 1] = { a, b } end
+			end
+			O.BoneList = out
+		end
+		return O.BoneList
+	end
+
+	-- returns true when anything was drawn for this player
+	local function update(O, cam, vs, t, dt)
+		local p = O.Player
+		local char = p.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		local head = char and char:FindFirstChild("Head")
+		if not (hum and hrp and head) or hum.Health <= 0 then return false end
+
+		local rp = hrp.Position
+		local dist = (cam.CFrame.Position - rp).Magnitude
+		local range = F("esp_range", nil)
+		local dmin, dmax = 0, 1500
+		if type(range) == "table" then dmin, dmax = range.Min or 0, range.Max or 1500 end
+		if dist < dmin or dist > dmax then return false end
+		local status = Library:GetPlayerStatus(p)
+		if status == "Friendly" and F("esp_hide_friendly", false) then return false end
+		local statusCol = F("esp_status_color", false) and STATUS_COL[status] or nil
+
+		local topV = cam:WorldToViewportPoint(Vector3.new(rp.X, head.Position.Y + head.Size.Y * 0.5 + 0.15, rp.Z))
+		local botY = hum.RigType == Enum.HumanoidRigType.R6 and (rp.Y - 3) or (rp.Y - (hrp.Size.Y * 0.5 + hum.HipHeight))
+		local botV = cam:WorldToViewportPoint(Vector3.new(rp.X, botY - 0.1, rp.Z))
+		if topV.Z <= 0 or botV.Z <= 0 then return false end
+		local h = botV.Y - topV.Y
+		if h < 4 then return false end
+		local w = h * 0.56
+		local fx, fy = math.floor(topV.X - w * 0.5), math.floor(topV.Y)
+		local fw, fh = math.max(math.floor(w), 2), math.floor(h)
+		if fx > vs.X + 40 or fx + fw < -40 or fy > vs.Y + 40 or fy + fh < -40 then return false end
+
+		-- box ---------------------------------------------------------
+		local showBox = F("esp_box", false)
+		local style = F("esp_box_style", "Full")
+		local outl = F("esp_box_outline", true)
+		local boxCol = statusCol or C("esp_color", Theme.Accent)
+		local full = showBox and style ~= "Corners"
+		O.Box.Visible = full
+		O.Outer.Visible = full and outl
+		O.Inner.Visible = full and outl
+		if full then
+			rect(O.Box, fx, fy, fw, fh)
+			O.BoxStroke.Color = boxCol
+			rect(O.Outer, fx - 1, fy - 1, fw + 2, fh + 2)
+			rect(O.Inner, fx + 1, fy + 1, math.max(fw - 2, 1), math.max(fh - 2, 1))
+		end
+		local corners = showBox and style == "Corners"
+		for i = 1, 8 do O.Corners[i].Visible = corners end
+		if corners then
+			local len = math.max(4, math.floor(math.min(fw, fh) * 0.28))
+			local cs = O.Corners
+			rect(cs[1], fx, fy, len, 1);                     rect(cs[2], fx, fy, 1, len)
+			rect(cs[3], fx + fw - len, fy, len, 1);          rect(cs[4], fx + fw - 1, fy, 1, len)
+			rect(cs[5], fx, fy + fh - 1, len, 1);            rect(cs[6], fx, fy + fh - len, 1, len)
+			rect(cs[7], fx + fw - len, fy + fh - 1, len, 1); rect(cs[8], fx + fw - 1, fy + fh - len, 1, len)
+			for i = 1, 8 do
+				cs[i].BackgroundColor3 = boxCol
+				O.CornerStrokes[i].Transparency = outl and 0.35 or 1
+			end
+		end
+		local fill = showBox and F("esp_box_fill", true)
+		O.Fill.Visible = fill
+		if fill then
+			rect(O.Fill, fx, fy, fw, fh)
+			ESPFx.Fill(O.Fill, O.FillGrad, t)
+		end
+
+		-- health bar ----------------------------------------------------
+		local showHp = F("esp_health", false)
+		O.HpBg.Visible = showHp
+		local hpText = false
+		if showHp then
+			local right = F("esp_health_side", "Left") == "Right"
+			local bx = right and (fx + fw + 5) or (fx - 8)
+			rect(O.HpBg, bx, fy, 3, fh)
+			local frac = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+			if F("esp_health_animations", true) then
+				O.HpDisp = O.HpDisp + (frac - O.HpDisp) * math.min(1, dt * 9)
+			else
+				O.HpDisp = frac
+			end
+			O.HpClip.Size = UDim2.fromScale(1, O.HpDisp)
+			O.HpFill.Size = UDim2.new(1, 0, 0, fh)
+			ESPFx.Health(O.HpFill, O.HpGrad, O.HpDisp)
+			if F("esp_health_text", false) then
+				hpText = true
+				O.HpText.Text = tostring(math.floor(hum.Health + 0.5))
+				O.HpText.TextColor3 = statusCol or WHITE
+				O.HpText.AnchorPoint = Vector2.new(right and 0 or 1, 0.5)
+				O.HpText.Position = UDim2.fromOffset(right and (bx + 7) or (bx - 4), fy + math.floor(fh * (1 - O.HpDisp)))
+			end
+		end
+		O.HpText.Visible = hpText
+
+		-- name + distance -------------------------------------------------
+		local showName = F("esp_name", false)
+		O.Name.Visible = showName
+		if showName then
+			local size = F("esp_name_size", 12)
+			O.Name.TextSize = size
+			O.Name.Size = UDim2.fromOffset(220, size + 2)
+			O.Name.Text = F("esp_name_source", "Display name") == "Username" and p.Name or p.DisplayName
+			O.Name.TextColor3 = statusCol or C("esp_name_color", WHITE)
+			O.Name.Position = UDim2.fromOffset(fx + math.floor(fw / 2), fy - 3)
+		end
+		local showDist = showName and F("esp_distance", true)
+		O.Dist.Visible = showDist
+		if showDist then
+			O.Dist.Text = math.floor(dist + 0.5) .. " st"
+			O.Dist.TextColor3 = Color3.fromRGB(200, 200, 208)
+			O.Dist.Position = UDim2.fromOffset(fx + math.floor(fw / 2), fy + fh + 3)
+		end
+
+		-- skeleton ----------------------------------------------------------
+		local used = 0
+		if F("esp_skeleton", false) then
+			local list = getBones(O, char, hum)
+			local th = F("esp_skeleton_thick", 1)
+			local col = statusCol or C("esp_skeleton_color", WHITE)
+			local pts = {}
+			local function proj(part)
+				local v = pts[part]
+				if v == nil then
+					local sp = cam:WorldToViewportPoint(part.Position)
+					v = sp.Z > 0 and Vector2.new(sp.X, sp.Y) or false
+					pts[part] = v
+				end
+				return v
+			end
+			for _, pr in ipairs(list) do
+				local a, b = proj(pr[1]), proj(pr[2])
+				if a and b then
+					used = used + 1
+					local ln = O.Bones[used]
+					if not ln then
+						ln = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = WHITE, Parent = O.Root })
+						O.Bones[used] = ln
+					end
+					local mid, delta = (a + b) * 0.5, b - a
+					ln.Visible = true
+					ln.BackgroundColor3 = col
+					ln.Position = UDim2.fromOffset(mid.X, mid.Y)
+					ln.Size = UDim2.fromOffset(math.max(delta.Magnitude, 1), th)
+					ln.Rotation = math.deg(math.atan2(delta.Y, delta.X))
+				end
+			end
+		end
+		for i = used + 1, #O.Bones do O.Bones[i].Visible = false end
+		return true
+	end
+
+	local function destroyObject(p)
+		local O = ESP.Objects[p]
+		if O then
+			pcall(function() O.Root:Destroy() end)
+			ESP.Objects[p] = nil
+		end
+	end
+
+	function ESP:SetEnabled(v)
+		ESP.Enabled = v and true or false
+		local opt = Library.Options.esp_enabled
+		if opt and opt.Value ~= ESP.Enabled then pcall(opt.SetValue, opt, ESP.Enabled, true) end
+	end
+	function ESP:Enable() ESP:SetEnabled(true) end
+	function ESP:Disable() ESP:SetEnabled(false) end
+	function ESP:Toggle() ESP:SetEnabled(not ESP.Enabled) end
+
+	local MAP = {
+		Box = "esp_box", BoxStyle = "esp_box_style", BoxOutline = "esp_box_outline", BoxColor = "esp_color",
+		Fill = "esp_box_fill", FillEffect = "esp_fill_effect", FillColor = "esp_fill_color", FillColor2 = "esp_fill_color2",
+		FillOpacity = "esp_fill_alpha", FillSpeed = "esp_fill_speed", Animations = "esp_box_animations",
+		Skeleton = "esp_skeleton", SkeletonColor = "esp_skeleton_color", SkeletonThickness = "esp_skeleton_thick",
+		Health = "esp_health", HealthStyle = "esp_health_style", HealthSide = "esp_health_side",
+		HealthText = "esp_health_text", HealthAnimations = "esp_health_animations",
+		HighColor = "esp_hp_high", LowColor = "esp_hp_low",
+		Name = "esp_name", NameColor = "esp_name_color", NameSource = "esp_name_source", NameSize = "esp_name_size",
+		Distance = "esp_distance", HideFriendly = "esp_hide_friendly", StatusColors = "esp_status_color",
+	}
+	-- ESP:Configure({ Enabled = true, Box = true, BoxStyle = "Corners", Range = { 0, 800 }, ... })
+	function ESP:Configure(cfg)
+		for k, v in pairs(cfg or {}) do
+			if k == "Enabled" then
+				ESP:SetEnabled(v)
+			elseif k == "Range" then
+				local rv = { Min = v.Min or v[1] or 0, Max = v.Max or v[2] or 1500 }
+				Library.Flags.esp_range = rv
+				local opt = Library.Options.esp_range
+				if opt then pcall(opt.SetValue, opt, rv, true) end
+			elseif MAP[k] then
+				Library.Flags[MAP[k]] = v
+				local opt = Library.Options[MAP[k]]
+				if opt then pcall(opt.SetValue, opt, v, true) end
+			else
+				warn("[Interium ESP] unknown option: " .. tostring(k))
+			end
+		end
+	end
+
+	conn(Players.PlayerRemoving:Connect(destroyObject))
+	conn(RunService.RenderStepped:Connect(function(dt)
+		if Library._unloaded then return end
+		if not ESP.Enabled then
+			if ESP._shown then
+				ESP._shown = false
+				for _, O in pairs(ESP.Objects) do O.Root.Visible = false end
+			end
+			return
+		end
+		local cam = workspace.CurrentCamera
+		if not cam then return end
+		ESP._shown = true
+		local vs = cam.ViewportSize
+		local t = os.clock()
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= LocalPlayer then
+				local O = ESP.Objects[p]
+				if p == Library.Spectate.Target then
+					if O then O.Root.Visible = false end
+				else
+					if not O then O = newObject(p); ESP.Objects[p] = O end
+					local ok, res = pcall(update, O, cam, vs, t, dt)
+					if not ok and not ESP._warned then ESP._warned = true; warn("[Interium ESP] " .. tostring(res)) end
+					O.Root.Visible = ok and res == true
+				end
+			end
+		end
+	end))
+end
+
+function Library:IsActive(id)
+	local o = Library.Options[id]
+	if not o then return false end
+	if o.IsActive then return o:IsActive() end
+	return o.Value == true
+end
+
+local function buildESP(W)
+	local tab = W:AddTab("ESP")
+	local main = tab:AddSection("ESP", "Left")
+	local filt = tab:AddSection("Filters", "Left")
+	local prev = tab:AddSection("Preview", "Right")
+
+	main:AddToggle("esp_enabled", { Text = "Enable built-in ESP", Default = Library.ESP.Enabled, Callback = function(v) Library.ESP.Enabled = v end })
+	main:AddDivider()
+
+	local box = main:AddToggle("esp_box", { Text = "Box", Default = true })
+	box:AddColorPicker("esp_color", { Default = Theme.Accent })
+	local bs = box:AddSettings({ Animations = true })
+	bs:AddDropdown("esp_box_style", { Text = "Style", Items = { "Full", "Corners" }, Default = "Full" })
+	bs:AddToggle("esp_box_outline", { Text = "Outline", Default = true })
+	bs:AddToggle("esp_box_fill", { Text = "Fill", Default = true })
+	bs:AddDropdown("esp_fill_effect", { Text = "Fill effect", Items = { "Breathing", "Pulse", "Gradient", "Wave", "Rainbow", "Solid" }, Default = "Breathing" })
+	bs:AddLabel("Fill colour"):AddColorPicker("esp_fill_color", { Default = Theme.Accent, NoAlpha = true })
+	bs:AddLabel("Fill colour 2"):AddColorPicker("esp_fill_color2", { Default = Color3.fromRGB(110, 70, 220), NoAlpha = true })
+	bs:AddSlider("esp_fill_alpha", { Text = "Fill opacity", Min = 5, Max = 80, Default = 35, Suffix = "%" })
+	bs:AddSlider("esp_fill_speed", { Text = "Effect speed", Min = 25, Max = 300, Default = 100, Suffix = "%" })
+
+	local sk = main:AddToggle("esp_skeleton", { Text = "Skeleton", Default = false })
+	sk:AddColorPicker("esp_skeleton_color", { Default = Color3.new(1, 1, 1), NoAlpha = true })
+	sk:AddSettings():AddNumberInput("esp_skeleton_thick", { Text = "Thickness", Min = 1, Max = 4, Step = 1, Default = 1, Suffix = " px" })
+
+	local hp = main:AddToggle("esp_health", { Text = "Health bar", Default = true })
+	local hs = hp:AddSettings({ Animations = true })
+	hs:AddDropdown("esp_health_style", { Text = "Style", Items = { "Gradient", "Dynamic", "Solid" }, Default = "Gradient" })
+	hs:AddDropdown("esp_health_side", { Text = "Side", Items = { "Left", "Right" }, Default = "Left" })
+	hs:AddLabel("High colour"):AddColorPicker("esp_hp_high", { Default = Color3.fromRGB(70, 220, 110), NoAlpha = true, NoAnim = true })
+	hs:AddLabel("Low colour"):AddColorPicker("esp_hp_low", { Default = Color3.fromRGB(235, 65, 75), NoAlpha = true, NoAnim = true })
+	hs:AddToggle("esp_health_text", { Text = "Health text", Default = false })
+
+	local nm = main:AddToggle("esp_name", { Text = "Name", Default = true })
+	nm:AddColorPicker("esp_name_color", { Default = Color3.new(1, 1, 1), NoAlpha = true })
+	local ns = nm:AddSettings()
+	ns:AddDropdown("esp_name_source", { Text = "Show", Items = { "Display name", "Username" }, Default = "Display name" })
+	ns:AddToggle("esp_distance", { Text = "Distance", Default = true })
+	ns:AddNumberInput("esp_name_size", { Text = "Text size", Min = 9, Max = 20, Step = 1, Default = 12, Suffix = " px" })
+
+	filt:AddRangeSlider("esp_range", { Text = "Distance range", Min = 0, Max = 3000, Default = { Min = 0, Max = 1500 }, Suffix = " st" })
+	filt:AddToggle("esp_hide_friendly", { Text = "Hide friendly", Default = false })
+	filt:AddToggle("esp_status_color", { Text = "Use status colours", Default = false })
+
+	prev:AddESPPreview({ Height = 300 })
+end
+-- optional: only if you want ESP controls in the menu -> Library.ESP:AddTab(window)
+function Library.ESP:AddTab(W) return buildESP(W) end
+
 
 local function teleportTo(p)
 	local mine = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
