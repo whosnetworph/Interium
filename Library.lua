@@ -962,38 +962,51 @@ local function buildDropdown(parent, o, inline)
 			tween(slot, { Size = UDim2.new(1, 0, 0, h + 2) }, 0.22, QUINT)
 			tween(parent, { Size = UDim2.new(1, 0, 0, M.DD - 1 + h + 2) }, 0.22, QUINT)
 		else
-			-- Floating list: pin top-left of list to bottom-left of the dropdown box.
 			local bw = math.max(math.floor(box.AbsoluteSize.X + 0.5), 80)
 			resizePopup(list, bw, h, false)
 			local meta = PopupOf[list]
 			meta.W, meta.H = bw, h
 			meta.Panel.Size = UDim2.fromOffset(bw, h)
 			list.Size = UDim2.fromOffset(bw + 2, h + 2)
-			-- Place manually so AbsolutePosition is respected even inside other popups
+			list.AnchorPoint = Vector2.new(0, 0)
+			meta.Panel.AnchorPoint = Vector2.new(0, 0)
+			meta.Panel.Position = UDim2.fromOffset(1, 1)
+
 			local function place()
 				local ap, asz = box.AbsolutePosition, box.AbsoluteSize
-				local x = math.floor(ap.X)
-				local y = math.floor(ap.Y + asz.Y)
 				local vp = viewport()
-				x = math.clamp(x, 4, math.max(4, vp.X - (bw + 2) - 4))
+				local x = math.floor(ap.X + 0.5)
+				local y = math.floor(ap.Y + asz.Y + 0.5)
 				if y + h + 2 > vp.Y - 4 then
-					y = math.max(4, math.floor(ap.Y - (h + 2)))
+					y = math.max(4, math.floor(ap.Y - h - 2 + 0.5))
 				end
+				x = math.clamp(x, 4, math.max(4, vp.X - bw - 6))
 				list.Position = UDim2.fromOffset(x, y)
-				list.AnchorPoint = Vector2.new(0, 0)
-				meta.Panel.AnchorPoint = Vector2.new(0, 0)
-				meta.Panel.Position = UDim2.fromOffset(1, 1)
+				list.Size = UDim2.fromOffset(bw + 2, h + 2)
+				meta.Panel.Size = UDim2.fromOffset(bw, h)
+			end
+
+			-- Remove any existing entry for this list
+			for i = #Popups, 1, -1 do
+				if Popups[i].Frame == list then table.remove(Popups, i) end
 			end
 			place()
 			list.Visible = true
 			list.Active = true
 			zc = zc + 1
-			list.ZIndex = zc
+			list.ZIndex = zc + 50
+			meta.Panel.ZIndex = zc + 51
 			meta.Token = meta.Token + 1
-			-- Keep parent settings/color popup open
-			table.insert(Popups, { Frame = list, Anchor = box, Hit = { list, box }, OnClose = function() paint() end })
+			table.insert(Popups, {
+				Frame = list, Anchor = box, Hit = { list, box },
+				OnClose = function()
+					list.Visible = false
+					paint()
+				end,
+			})
 			place()
 			task.defer(place)
+			task.delay(0.05, place)
 		end
 		paint()
 	end)
@@ -1318,10 +1331,11 @@ local function attachPicker(holder, id, o)
 		P.Value = animColor(P, os.clock())
 		if P.Animation ~= "None" then Library._animated[P] = true else Library._animated[P] = nil end
 		paint(animate)
-		if id then Library.Flags[id] = P.Value end
+		-- Flags always store the base Color so ESP/config read a stable Color3
+		if id then Library.Flags[id] = P.Color end
 		if PUI.Current == P then PUI.UpdateSwatches() end
 		last = P.Value
-		fire(P, P.Value, P.Alpha)
+		fire(P, P.Color, P.Alpha)
 	end
 	function P:_tick()
 		local c = animColor(P, os.clock())
@@ -1329,21 +1343,19 @@ local function attachPicker(holder, id, o)
 			last = c
 			P.Value = c
 			paint(false)
-			if id then Library.Flags[id] = c end
-			emit(P, c, P.Alpha)
+			-- do not overwrite Flags with the animated frame colour
+			emit(P, P.Color, P.Alpha)
 		end
 	end
 	function P:SetValue(c, a, silent)
 		if typeof(c) == "table" then c, a = c.Color or c[1], c.Alpha or a end
+		if typeof(c) ~= "Color3" then return end
 		P.Color = c
-		if a then P.Alpha = a end
-		if silent then
-			P.Value = animColor(P, os.clock())
-			paint(false)
-			if id then Library.Flags[id] = P.Value end
-		else
-			P:_update(false, true)
-		end
+		if a ~= nil then P.Alpha = a end
+		P.Value = animColor(P, os.clock())
+		paint(not silent)
+		if id then Library.Flags[id] = P.Color end
+		if not silent then fire(P, P.Color, P.Alpha) end
 		if PUI.Current == P and PUI.Frame then PUI.Sync() end
 	end
 	function P:SetAnimation(name, speed, c2)
@@ -1367,8 +1379,10 @@ local function attachPicker(holder, id, o)
 
 	sw.MouseButton1Click:Connect(function() PUI.Open(P, sw) end)
 	if o.Tooltip then tip(sw, o.Tooltip) end
-	P:_update()
+	P.Value = P.Color
+	paint(false)
 	register(id, P)
+	if id then Library.Flags[id] = P.Color end
 	return P
 end
 
@@ -2188,7 +2202,7 @@ do
 		esp_hp_high = Color3.fromRGB(70, 220, 110), esp_hp_low = Color3.fromRGB(235, 65, 75),
 		esp_name = true, esp_name_source = "Display name", esp_name_size = 12, esp_distance = true,
 		esp_name_color = Color3.new(1, 1, 1), esp_color = nil,
-		esp_range = { Min = 0, Max = 1500 }, esp_hide_friendly = false, esp_status_color = false,
+		esp_range = { Min = 0, Max = 3000 }, esp_hide_friendly = false, esp_status_color = false,
 	}
 	ESPFx.Defaults = Defaults
 	local function flag(k, d)
@@ -2200,7 +2214,14 @@ do
 	local function colorFlag(k, d)
 		local v = Library.Flags[k]
 		if typeof(v) == "Color3" then return v end
-		if typeof(v) == "table" and v.R then return Color3.new(v.R, v.G, v.B) end
+		local opt = Library.Options[k]
+		if opt then
+			if typeof(opt.Color) == "Color3" then return opt.Color end
+			if typeof(opt.Value) == "Color3" then return opt.Value end
+		end
+		if typeof(v) == "table" and typeof(v.R) == "number" then
+			return Color3.new(v.R, v.G, v.B)
+		end
 		local dv = Defaults[k]
 		if typeof(dv) == "Color3" then return dv end
 		return d
@@ -4198,37 +4219,41 @@ do
 		if status == "Friendly" and F("esp_hide_friendly", false) then return false end
 		local statusCol = F("esp_status_color", false) and STATUS_COL[status] or nil
 
-		-- Project body parts to get a tight, non-warped 2D box
-		local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
-		local anyOnScreen = false
-		local function consider(part)
-			if not part or not part:IsA("BasePart") then return end
-			local cf, sz = part.CFrame, part.Size * 0.5
-			-- 8 corners of the part
-			for ox = -1, 1, 2 do
-				for oy = -1, 1, 2 do
-					for oz = -1, 1, 2 do
-						local sp, on = cam:WorldToViewportPoint((cf * CFrame.new(ox * sz.X, oy * sz.Y, oz * sz.Z)).Position)
-						if sp.Z > 0 then
-							anyOnScreen = true
-							if sp.X < minX then minX = sp.X end
-							if sp.Y < minY then minY = sp.Y end
-							if sp.X > maxX then maxX = sp.X end
-							if sp.Y > maxY then maxY = sp.Y end
-						end
-					end
-				end
-			end
+		-- Top / bottom of character in world space
+		local topPos = Vector3.new(rp.X, head.Position.Y + head.Size.Y * 0.5 + 0.15, rp.Z)
+		local botY
+		if hum.RigType == Enum.HumanoidRigType.R6 then
+			botY = rp.Y - 3
+		else
+			botY = rp.Y - (hrp.Size.Y * 0.5 + hum.HipHeight)
 		end
-		consider(head)
-		consider(hrp)
-		for _, n in ipairs({ "UpperTorso", "LowerTorso", "Torso", "LeftUpperArm", "RightUpperArm", "LeftUpperLeg", "RightUpperLeg", "Left Arm", "Right Arm", "Left Leg", "Right Leg" }) do
-			consider(char:FindFirstChild(n))
+		local botPos = Vector3.new(rp.X, botY - 0.05, rp.Z)
+
+		local topV = cam:WorldToViewportPoint(topPos)
+		local botV = cam:WorldToViewportPoint(botPos)
+		if topV.Z <= 0 or botV.Z <= 0 then return false end
+
+		-- Horizontal extents from torso left/right (stable width, no aspect-ratio warp)
+		local torso = char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso") or hrp
+		local halfW = (torso.Size.X * 0.5) + 0.35
+		local leftV = cam:WorldToViewportPoint(torso.Position - torso.CFrame.RightVector * halfW)
+		local rightV = cam:WorldToViewportPoint(torso.Position + torso.CFrame.RightVector * halfW)
+
+		local minX = math.min(topV.X, botV.X, leftV.X, rightV.X)
+		local maxX = math.max(topV.X, botV.X, leftV.X, rightV.X)
+		local minY = math.min(topV.Y, botV.Y)
+		local maxY = math.max(topV.Y, botV.Y)
+		-- Keep a sensible minimum width relative to height
+		local height = maxY - minY
+		if height < 4 then return false end
+		local width = maxX - minX
+		local minWidth = height * 0.35
+		if width < minWidth then
+			local cx = (minX + maxX) * 0.5
+			minX, maxX = cx - minWidth * 0.5, cx + minWidth * 0.5
 		end
-		if not anyOnScreen or maxX - minX < 2 or maxY - minY < 4 then return false end
-		local pad = 2
-		local fx, fy = math.floor(minX - pad), math.floor(minY - pad)
-		local fw, fh = math.max(math.floor(maxX - minX + pad * 2), 2), math.max(math.floor(maxY - minY + pad * 2), 4)
+		local fx, fy = math.floor(minX), math.floor(minY)
+		local fw, fh = math.max(math.floor(maxX - minX), 2), math.max(math.floor(maxY - minY), 4)
 		if fx > vs.X + 40 or fx + fw < -40 or fy > vs.Y + 40 or fy + fh < -40 then return false end
 
 		-- box ---------------------------------------------------------
@@ -4449,16 +4474,15 @@ local function buildESP(W)
 	local filt = tab:AddSection("Filters", "Left")
 	local prev = tab:AddSection("Preview", "Right")
 
-	-- Master toggle; everything else lives in sub-options (only visible while Enabled)
-	if Library.ESP.Enabled == nil then Library.ESP.Enabled = true end
-	local en = main:AddToggle("esp_enabled", {
+	Library.ESP.Enabled = true
+	main:AddToggle("esp_enabled", {
 		Text = "Enabled",
-		Default = Library.ESP.Enabled ~= false,
+		Default = true,
 		Callback = function(v) Library.ESP.Enabled = v and true or false end,
 	})
-	local sub = en:AddSubOptions()
+	main:AddDivider()
 
-	local box = sub:AddToggle("esp_box", { Text = "Box", Default = true })
+	local box = main:AddToggle("esp_box", { Text = "Box", Default = true })
 	box:AddColorPicker("esp_color", { Default = Theme.Accent, NoAnim = true, NoAlpha = true })
 	local bs = box:AddSettings({ Animations = true })
 	bs:AddDropdown("esp_box_style", { Text = "Style", Items = { "Full", "Corners" }, Default = "Full" })
@@ -4471,11 +4495,11 @@ local function buildESP(W)
 	bs:AddSlider("esp_fill_alpha", { Text = "Fill opacity", Min = 5, Max = 80, Default = 35, Suffix = "%" })
 	bs:AddSlider("esp_fill_speed", { Text = "Effect speed", Min = 25, Max = 300, Default = 100, Suffix = "%" })
 
-	local sk = sub:AddToggle("esp_skeleton", { Text = "Skeleton", Default = false })
+	local sk = main:AddToggle("esp_skeleton", { Text = "Skeleton", Default = false })
 	sk:AddColorPicker("esp_skeleton_color", { Default = Color3.new(1, 1, 1), NoAlpha = true, NoAnim = true })
 	sk:AddSettings():AddNumberInput("esp_skeleton_thick", { Text = "Thickness", Min = 1, Max = 4, Step = 1, Default = 1, Suffix = " px" })
 
-	local hp = sub:AddToggle("esp_health", { Text = "Health bar", Default = true })
+	local hp = main:AddToggle("esp_health", { Text = "Health bar", Default = true })
 	local hs = hp:AddSettings({ Animations = true })
 	hs:AddDropdown("esp_health_style", { Text = "Style", Items = { "Gradient", "Dynamic", "Solid" }, Default = "Gradient" })
 	hs:AddDropdown("esp_health_side", { Text = "Side", Items = { "Left", "Right" }, Default = "Left" })
@@ -4484,14 +4508,14 @@ local function buildESP(W)
 	hs:AddLabel("Low colour"):AddColorPicker("esp_hp_low", { Default = Color3.fromRGB(235, 65, 75), NoAlpha = true, NoAnim = true })
 	hs:AddToggle("esp_health_text", { Text = "Health text", Default = false })
 
-	local nm = sub:AddToggle("esp_name", { Text = "Name", Default = true })
+	local nm = main:AddToggle("esp_name", { Text = "Name", Default = true })
 	nm:AddColorPicker("esp_name_color", { Default = Color3.new(1, 1, 1), NoAlpha = true, NoAnim = true })
 	local ns = nm:AddSettings()
 	ns:AddDropdown("esp_name_source", { Text = "Show", Items = { "Display name", "Username" }, Default = "Display name" })
 	ns:AddToggle("esp_distance", { Text = "Distance", Default = true })
 	ns:AddNumberInput("esp_name_size", { Text = "Text size", Min = 9, Max = 20, Step = 1, Default = 12, Suffix = " px" })
 
-	filt:AddRangeSlider("esp_range", { Text = "Distance range", Min = 0, Max = 3000, Default = { Min = 0, Max = 1500 }, Suffix = " st" })
+	filt:AddRangeSlider("esp_range", { Text = "Distance range", Min = 0, Max = 3000, Default = { Min = 0, Max = 3000 }, Suffix = " st" })
 	filt:AddToggle("esp_hide_friendly", { Text = "Hide friendly", Default = false })
 	filt:AddToggle("esp_status_color", { Text = "Use status colours", Default = false })
 
