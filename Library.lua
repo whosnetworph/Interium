@@ -404,17 +404,26 @@ local function openPopup(frame, anchor, o)
 	local w, h = meta.W, meta.H
 	local ap, as = anchor.AbsolutePosition, anchor.AbsoluteSize
 	local vp = viewport()
-	local gap = o.Gap or 3
+	local gap = o.Gap or 0
 
 	local x, y, up = 0, 0, false
 	if o.Side == "left" or o.Side == "right" then
-		-- place beside the anchor, vertically centered on it
-		if o.Side == "left" then
-			x = ap.X - gap - (w + 2)
-		else
+		-- Top-aligned to the anchor.
+		-- Side "right": popup top-left  == anchor top-right
+		-- Side "left":  popup top-right == anchor top-left
+		y = ap.Y
+		if o.Side == "right" then
 			x = ap.X + as.X + gap
+			-- flip to left if it would go off-screen
+			if x + (w + 2) > vp.X - 4 and (ap.X - gap - (w + 2)) >= 4 then
+				x = ap.X - gap - (w + 2)
+			end
+		else
+			x = ap.X - gap - (w + 2)
+			if x < 4 and (ap.X + as.X + gap + w + 2) <= vp.X - 4 then
+				x = ap.X + as.X + gap
+			end
 		end
-		y = ap.Y + as.Y * 0.5 - (h + 2) * 0.5
 		x = math.clamp(x, 4, math.max(4, vp.X - (w + 2) - 4))
 		y = math.clamp(y, 4, math.max(4, vp.Y - (h + 2) - 4))
 		meta.Up = false
@@ -423,17 +432,18 @@ local function openPopup(frame, anchor, o)
 		meta.Panel.AnchorPoint = Vector2.new(0, 0)
 		meta.Panel.Position = UDim2.fromOffset(1, 1)
 	else
-		x = ap.X - 1
-		if o.Align == "right" then x = ap.X + as.X - w - 1 end
+		-- Below / above the anchor (dropdown lists, etc.)
+		x = ap.X
+		if o.Align == "right" then x = ap.X + as.X - (w + 2) end
 		x = math.clamp(x, 4, math.max(4, vp.X - (w + 2) - 4))
 
-		local below = ap.Y + as.Y + 1 + gap
+		local below = ap.Y + as.Y + gap
 		up = false
-		if not o.NoFlip and below + h + 2 > vp.Y - 4 and ap.Y - 1 - gap - (h + 2) >= 4 then up = true end
+		if not o.NoFlip and below + h + 2 > vp.Y - 4 and ap.Y - gap - (h + 2) >= 4 then up = true end
 
 		meta.Up = up
 		frame.AnchorPoint = up and Vector2.new(0, 1) or Vector2.new(0, 0)
-		frame.Position = UDim2.fromOffset(math.floor(x), math.floor(up and (ap.Y - 1 - gap) or below))
+		frame.Position = UDim2.fromOffset(math.floor(x), math.floor(up and (ap.Y - gap) or below))
 		meta.Panel.AnchorPoint = up and Vector2.new(0, 1) or Vector2.new(0, 0)
 		meta.Panel.Position = up and UDim2.new(0, 1, 1, -1) or UDim2.fromOffset(1, 1)
 	end
@@ -446,11 +456,11 @@ local function openPopup(frame, anchor, o)
 	table.insert(Popups, { Frame = frame, Anchor = anchor, OnClose = o.OnClose, Hit = { frame, anchor } })
 
 	local full = UDim2.fromOffset(w + 2, h + 2)
-	if Library.Animations then
+	if o.Instant or not Library.Animations then
+		frame.Size = full
+	else
 		frame.Size = UDim2.fromOffset(w + 2, 0)
 		tween(frame, { Size = full }, 0.2, QUINT)
-	else
-		frame.Size = full
 	end
 end
 
@@ -952,8 +962,16 @@ local function buildDropdown(parent, o, inline)
 			tween(slot, { Size = UDim2.new(1, 0, 0, h + 2) }, 0.22, QUINT)
 			tween(parent, { Size = UDim2.new(1, 0, 0, M.DD - 1 + h + 2) }, 0.22, QUINT)
 		else
-			resizePopup(list, box.AbsoluteSize.X, h, false)
-			openPopup(list, box, { Child = true, Gap = 2, NoFlip = true, OnClose = function() paint() end })
+			-- Floating list under the dropdown box (settings / nested popups).
+			-- Match width to the box and pin top-left under the box top-left.
+			local bw = math.max(math.floor(box.AbsoluteSize.X + 0.5), 80)
+			resizePopup(list, bw, h, false)
+			-- Instant size so the list does not grow over the button while animating.
+			local meta = PopupOf[list]
+			local full = UDim2.fromOffset(bw + 2, h + 2)
+			list.Size = full
+			meta.Panel.Size = UDim2.fromOffset(bw, h)
+			openPopup(list, box, { Child = true, Gap = 0, NoFlip = true, Instant = true, OnClose = function() paint() end })
 		end
 		paint()
 	end)
@@ -1243,7 +1261,7 @@ function PUI.Open(P, anchor)
 	for _, pp in ipairs(Popups) do
 		if anchor:IsDescendantOf(pp.Frame) then nested = true break end
 	end
-	openPopup(PUI.Frame, anchor, { Side = "left", Gap = 6, Child = nested })
+	openPopup(PUI.Frame, anchor, { Side = "right", Gap = 0, Child = nested })
 end
 
 local function attachPicker(holder, id, o)
@@ -1370,7 +1388,7 @@ local function openKeybindPopup(K, anchor)
 	if isOpen(K.Popup) then closePopup(K.Popup) return end
 	K.ShowToggle:SetValue(K.ShowInList, true)
 	K.ModeSeg:Set(K.Mode, true)
-	openPopup(K.Popup, anchor, { Align = "right", Gap = 4 })
+	openPopup(K.Popup, anchor, { Side = "right", Gap = 0 })
 end
 
 local function attachKeybind(holder, id, o)
@@ -1516,7 +1534,7 @@ local function attachSettings(holder, owner, so)
 		refit()
 		active = true
 		paint(true)
-		openPopup(root, btn, { Side = "left", Gap = 6, OnClose = function() active = false; paint(true) end })
+		openPopup(root, btn, { Side = "right", Gap = 0, OnClose = function() active = false; paint(true) end })
 		task.defer(refit)
 	end)
 
@@ -4373,7 +4391,7 @@ local function buildESP(W)
 	local filt = tab:AddSection("Filters", "Left")
 	local prev = tab:AddSection("Preview", "Right")
 
-	main:AddToggle("esp_enabled", { Text = "Enable built-in ESP", Default = Library.ESP.Enabled, Callback = function(v) Library.ESP.Enabled = v end })
+	main:AddToggle("esp_enabled", { Text = "Enabled", Default = Library.ESP.Enabled, Callback = function(v) Library.ESP.Enabled = v end })
 	main:AddDivider()
 
 	local box = main:AddToggle("esp_box", { Text = "Box", Default = true })
