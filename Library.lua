@@ -406,19 +406,37 @@ local function openPopup(frame, anchor, o)
 	local vp = viewport()
 	local gap = o.Gap or 3
 
-	local x = ap.X - 1
-	if o.Align == "right" then x = ap.X + as.X - w - 1 end
-	x = math.clamp(x, 4, math.max(4, vp.X - (w + 2) - 4))
+	local x, y, up = 0, 0, false
+	if o.Side == "left" or o.Side == "right" then
+		-- place beside the anchor, vertically centered on it
+		if o.Side == "left" then
+			x = ap.X - gap - (w + 2)
+		else
+			x = ap.X + as.X + gap
+		end
+		y = ap.Y + as.Y * 0.5 - (h + 2) * 0.5
+		x = math.clamp(x, 4, math.max(4, vp.X - (w + 2) - 4))
+		y = math.clamp(y, 4, math.max(4, vp.Y - (h + 2) - 4))
+		meta.Up = false
+		frame.AnchorPoint = Vector2.new(0, 0)
+		frame.Position = UDim2.fromOffset(math.floor(x), math.floor(y))
+		meta.Panel.AnchorPoint = Vector2.new(0, 0)
+		meta.Panel.Position = UDim2.fromOffset(1, 1)
+	else
+		x = ap.X - 1
+		if o.Align == "right" then x = ap.X + as.X - w - 1 end
+		x = math.clamp(x, 4, math.max(4, vp.X - (w + 2) - 4))
 
-	local below = ap.Y + as.Y + 1 + gap
-	local up = false
-	if not o.NoFlip and below + h + 2 > vp.Y - 4 and ap.Y - 1 - gap - (h + 2) >= 4 then up = true end
+		local below = ap.Y + as.Y + 1 + gap
+		up = false
+		if not o.NoFlip and below + h + 2 > vp.Y - 4 and ap.Y - 1 - gap - (h + 2) >= 4 then up = true end
 
-	meta.Up = up
-	frame.AnchorPoint = up and Vector2.new(0, 1) or Vector2.new(0, 0)
-	frame.Position = UDim2.fromOffset(math.floor(x), math.floor(up and (ap.Y - 1 - gap) or below))
-	meta.Panel.AnchorPoint = up and Vector2.new(0, 1) or Vector2.new(0, 0)
-	meta.Panel.Position = up and UDim2.new(0, 1, 1, -1) or UDim2.fromOffset(1, 1)
+		meta.Up = up
+		frame.AnchorPoint = up and Vector2.new(0, 1) or Vector2.new(0, 0)
+		frame.Position = UDim2.fromOffset(math.floor(x), math.floor(up and (ap.Y - 1 - gap) or below))
+		meta.Panel.AnchorPoint = up and Vector2.new(0, 1) or Vector2.new(0, 0)
+		meta.Panel.Position = up and UDim2.new(0, 1, 1, -1) or UDim2.fromOffset(1, 1)
+	end
 
 	zc = zc + 1
 	frame.ZIndex = zc
@@ -935,7 +953,7 @@ local function buildDropdown(parent, o, inline)
 			tween(parent, { Size = UDim2.new(1, 0, 0, M.DD - 1 + h + 2) }, 0.22, QUINT)
 		else
 			resizePopup(list, box.AbsoluteSize.X, h, false)
-			openPopup(list, box, { Child = true, Gap = -1, NoFlip = true, OnClose = function() paint() end })
+			openPopup(list, box, { Child = true, Gap = 2, NoFlip = true, OnClose = function() paint() end })
 		end
 		paint()
 	end)
@@ -1225,7 +1243,7 @@ function PUI.Open(P, anchor)
 	for _, pp in ipairs(Popups) do
 		if anchor:IsDescendantOf(pp.Frame) then nested = true break end
 	end
-	openPopup(PUI.Frame, anchor, { Align = "left", Gap = 4, Child = nested })
+	openPopup(PUI.Frame, anchor, { Side = "left", Gap = 6, Child = nested })
 end
 
 local function attachPicker(holder, id, o)
@@ -1322,6 +1340,7 @@ local KeyShort = {
 	Insert = "INS", Delete = "DEL", LeftShift = "LSHIFT", RightShift = "RSHIFT", LeftControl = "LCTRL",
 	RightControl = "RCTRL", LeftAlt = "LALT", RightAlt = "RALT", Return = "ENTER", Backspace = "BKSP",
 	CapsLock = "CAPS", Escape = "ESC", PageUp = "PGUP", PageDown = "PGDN", Space = "SPACE",
+	MouseButton1 = "MB1", MouseButton2 = "MB2", MouseButton3 = "MB3",
 }
 local function shortKey(name) return (KeyShort[name] or name):upper() end
 local function inputName(i)
@@ -1497,7 +1516,7 @@ local function attachSettings(holder, owner, so)
 		refit()
 		active = true
 		paint(true)
-		openPopup(root, btn, { Align = "right", Gap = 4, OnClose = function() active = false; paint(true) end })
+		openPopup(root, btn, { Side = "left", Gap = 6, OnClose = function() active = false; paint(true) end })
 		task.defer(refit)
 	end)
 
@@ -2121,10 +2140,10 @@ local ESPFx = {}
 do
 	local Defaults = {
 		esp_box = true, esp_box_style = "Full", esp_box_outline = true, esp_box_fill = true,
-		esp_fill_effect = "Breathing", esp_fill_alpha = 35, esp_fill_speed = 100, esp_box_animations = true,
+		esp_box_thick = 1, esp_fill_effect = "Breathing", esp_fill_alpha = 35, esp_fill_speed = 100, esp_box_animations = true,
 		esp_skeleton = false, esp_skeleton_thick = 1,
 		esp_health = true, esp_health_style = "Gradient", esp_health_side = "Left", esp_health_text = false,
-		esp_health_animations = true,
+		esp_health_animations = true, esp_health_width = 2,
 		esp_name = true, esp_name_source = "Display name", esp_name_size = 12, esp_distance = true,
 		esp_range = { Min = 0, Max = 1500 }, esp_hide_friendly = false, esp_status_color = false,
 	}
@@ -4145,21 +4164,25 @@ do
 		O.Box.Visible = full
 		O.Outer.Visible = full and outl
 		O.Inner.Visible = full and outl
+		local boxThick = math.clamp(tonumber(F("esp_box_thick", 1)) or 1, 1, 3)
 		if full then
 			rect(O.Box, fx, fy, fw, fh)
 			O.BoxStroke.Color = boxCol
-			rect(O.Outer, fx - 1, fy - 1, fw + 2, fh + 2)
-			rect(O.Inner, fx + 1, fy + 1, math.max(fw - 2, 1), math.max(fh - 2, 1))
+			O.BoxStroke.Thickness = boxThick
+			local pad = math.max(boxThick, 1)
+			rect(O.Outer, fx - pad, fy - pad, fw + pad * 2, fh + pad * 2)
+			rect(O.Inner, fx + pad, fy + pad, math.max(fw - pad * 2, 1), math.max(fh - pad * 2, 1))
 		end
 		local corners = showBox and style == "Corners"
 		for i = 1, 8 do O.Corners[i].Visible = corners end
 		if corners then
 			local len = math.max(4, math.floor(math.min(fw, fh) * 0.28))
+			local t = boxThick
 			local cs = O.Corners
-			rect(cs[1], fx, fy, len, 1);                     rect(cs[2], fx, fy, 1, len)
-			rect(cs[3], fx + fw - len, fy, len, 1);          rect(cs[4], fx + fw - 1, fy, 1, len)
-			rect(cs[5], fx, fy + fh - 1, len, 1);            rect(cs[6], fx, fy + fh - len, 1, len)
-			rect(cs[7], fx + fw - len, fy + fh - 1, len, 1); rect(cs[8], fx + fw - 1, fy + fh - len, 1, len)
+			rect(cs[1], fx, fy, len, t);                     rect(cs[2], fx, fy, t, len)
+			rect(cs[3], fx + fw - len, fy, len, t);          rect(cs[4], fx + fw - t, fy, t, len)
+			rect(cs[5], fx, fy + fh - t, len, t);            rect(cs[6], fx, fy + fh - len, t, len)
+			rect(cs[7], fx + fw - len, fy + fh - t, len, t); rect(cs[8], fx + fw - t, fy + fh - len, t, len)
 			for i = 1, 8 do
 				cs[i].BackgroundColor3 = boxCol
 				O.CornerStrokes[i].Transparency = outl and 0.35 or 1
@@ -4178,8 +4201,9 @@ do
 		local hpText = false
 		if showHp then
 			local right = F("esp_health_side", "Left") == "Right"
-			local bx = right and (fx + fw + 5) or (fx - 8)
-			rect(O.HpBg, bx, fy, 3, fh)
+			local hpW = math.clamp(tonumber(F("esp_health_width", 2)) or 2, 1, 6)
+			local bx = right and (fx + fw + 4) or (fx - (hpW + 4))
+			rect(O.HpBg, bx, fy, hpW, fh)
 			local frac = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
 			if F("esp_health_animations", true) then
 				O.HpDisp = O.HpDisp + (frac - O.HpDisp) * math.min(1, dt * 9)
@@ -4194,7 +4218,7 @@ do
 				O.HpText.Text = tostring(math.floor(hum.Health + 0.5))
 				O.HpText.TextColor3 = statusCol or WHITE
 				O.HpText.AnchorPoint = Vector2.new(right and 0 or 1, 0.5)
-				O.HpText.Position = UDim2.fromOffset(right and (bx + 7) or (bx - 4), fy + math.floor(fh * (1 - O.HpDisp)))
+				O.HpText.Position = UDim2.fromOffset(right and (bx + hpW + 3) or (bx - 3), fy + math.floor(fh * (1 - O.HpDisp)))
 			end
 		end
 		O.HpText.Visible = hpText
@@ -4275,11 +4299,12 @@ do
 
 	local MAP = {
 		Box = "esp_box", BoxStyle = "esp_box_style", BoxOutline = "esp_box_outline", BoxColor = "esp_color",
+		BoxThickness = "esp_box_thick",
 		Fill = "esp_box_fill", FillEffect = "esp_fill_effect", FillColor = "esp_fill_color", FillColor2 = "esp_fill_color2",
 		FillOpacity = "esp_fill_alpha", FillSpeed = "esp_fill_speed", Animations = "esp_box_animations",
 		Skeleton = "esp_skeleton", SkeletonColor = "esp_skeleton_color", SkeletonThickness = "esp_skeleton_thick",
 		Health = "esp_health", HealthStyle = "esp_health_style", HealthSide = "esp_health_side",
-		HealthText = "esp_health_text", HealthAnimations = "esp_health_animations",
+		HealthText = "esp_health_text", HealthAnimations = "esp_health_animations", HealthWidth = "esp_health_width",
 		HighColor = "esp_hp_high", LowColor = "esp_hp_low",
 		Name = "esp_name", NameColor = "esp_name_color", NameSource = "esp_name_source", NameSize = "esp_name_size",
 		Distance = "esp_distance", HideFriendly = "esp_hide_friendly", StatusColors = "esp_status_color",
@@ -4356,6 +4381,7 @@ local function buildESP(W)
 	local bs = box:AddSettings({ Animations = true })
 	bs:AddDropdown("esp_box_style", { Text = "Style", Items = { "Full", "Corners" }, Default = "Full" })
 	bs:AddToggle("esp_box_outline", { Text = "Outline", Default = true })
+	bs:AddNumberInput("esp_box_thick", { Text = "Thickness", Min = 1, Max = 3, Step = 1, Default = 1, Suffix = " px" })
 	bs:AddToggle("esp_box_fill", { Text = "Fill", Default = true })
 	bs:AddDropdown("esp_fill_effect", { Text = "Fill effect", Items = { "Breathing", "Pulse", "Gradient", "Wave", "Rainbow", "Solid" }, Default = "Breathing" })
 	bs:AddLabel("Fill colour"):AddColorPicker("esp_fill_color", { Default = Theme.Accent, NoAlpha = true })
@@ -4371,6 +4397,7 @@ local function buildESP(W)
 	local hs = hp:AddSettings({ Animations = true })
 	hs:AddDropdown("esp_health_style", { Text = "Style", Items = { "Gradient", "Dynamic", "Solid" }, Default = "Gradient" })
 	hs:AddDropdown("esp_health_side", { Text = "Side", Items = { "Left", "Right" }, Default = "Left" })
+	hs:AddNumberInput("esp_health_width", { Text = "Width", Min = 1, Max = 6, Step = 1, Default = 2, Suffix = " px" })
 	hs:AddLabel("High colour"):AddColorPicker("esp_hp_high", { Default = Color3.fromRGB(70, 220, 110), NoAlpha = true, NoAnim = true })
 	hs:AddLabel("Low colour"):AddColorPicker("esp_hp_low", { Default = Color3.fromRGB(235, 65, 75), NoAlpha = true, NoAnim = true })
 	hs:AddToggle("esp_health_text", { Text = "Health text", Default = false })
