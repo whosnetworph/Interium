@@ -962,16 +962,38 @@ local function buildDropdown(parent, o, inline)
 			tween(slot, { Size = UDim2.new(1, 0, 0, h + 2) }, 0.22, QUINT)
 			tween(parent, { Size = UDim2.new(1, 0, 0, M.DD - 1 + h + 2) }, 0.22, QUINT)
 		else
-			-- Floating list under the dropdown box (settings / nested popups).
-			-- Match width to the box and pin top-left under the box top-left.
+			-- Floating list: pin top-left of list to bottom-left of the dropdown box.
 			local bw = math.max(math.floor(box.AbsoluteSize.X + 0.5), 80)
 			resizePopup(list, bw, h, false)
-			-- Instant size so the list does not grow over the button while animating.
 			local meta = PopupOf[list]
-			local full = UDim2.fromOffset(bw + 2, h + 2)
-			list.Size = full
+			meta.W, meta.H = bw, h
 			meta.Panel.Size = UDim2.fromOffset(bw, h)
-			openPopup(list, box, { Child = true, Gap = 0, NoFlip = true, Instant = true, OnClose = function() paint() end })
+			list.Size = UDim2.fromOffset(bw + 2, h + 2)
+			-- Place manually so AbsolutePosition is respected even inside other popups
+			local function place()
+				local ap, asz = box.AbsolutePosition, box.AbsoluteSize
+				local x = math.floor(ap.X)
+				local y = math.floor(ap.Y + asz.Y)
+				local vp = viewport()
+				x = math.clamp(x, 4, math.max(4, vp.X - (bw + 2) - 4))
+				if y + h + 2 > vp.Y - 4 then
+					y = math.max(4, math.floor(ap.Y - (h + 2)))
+				end
+				list.Position = UDim2.fromOffset(x, y)
+				list.AnchorPoint = Vector2.new(0, 0)
+				meta.Panel.AnchorPoint = Vector2.new(0, 0)
+				meta.Panel.Position = UDim2.fromOffset(1, 1)
+			end
+			place()
+			list.Visible = true
+			list.Active = true
+			zc = zc + 1
+			list.ZIndex = zc
+			meta.Token = meta.Token + 1
+			-- Keep parent settings/color popup open
+			table.insert(Popups, { Frame = list, Anchor = box, Hit = { list, box }, OnClose = function() paint() end })
+			place()
+			task.defer(place)
 		end
 		paint()
 	end)
@@ -2159,10 +2181,13 @@ do
 	local Defaults = {
 		esp_box = true, esp_box_style = "Full", esp_box_outline = true, esp_box_fill = true,
 		esp_box_thick = 1, esp_fill_effect = "Breathing", esp_fill_alpha = 35, esp_fill_speed = 100, esp_box_animations = true,
-		esp_skeleton = false, esp_skeleton_thick = 1,
+		esp_fill_color = nil, esp_fill_color2 = nil, -- filled from Theme at runtime
+		esp_skeleton = false, esp_skeleton_thick = 1, esp_skeleton_color = Color3.new(1, 1, 1),
 		esp_health = true, esp_health_style = "Gradient", esp_health_side = "Left", esp_health_text = false,
 		esp_health_animations = true, esp_health_width = 2,
+		esp_hp_high = Color3.fromRGB(70, 220, 110), esp_hp_low = Color3.fromRGB(235, 65, 75),
 		esp_name = true, esp_name_source = "Display name", esp_name_size = 12, esp_distance = true,
+		esp_name_color = Color3.new(1, 1, 1), esp_color = nil,
 		esp_range = { Min = 0, Max = 1500 }, esp_hide_friendly = false, esp_status_color = false,
 	}
 	ESPFx.Defaults = Defaults
@@ -2175,6 +2200,9 @@ do
 	local function colorFlag(k, d)
 		local v = Library.Flags[k]
 		if typeof(v) == "Color3" then return v end
+		if typeof(v) == "table" and v.R then return Color3.new(v.R, v.G, v.B) end
+		local dv = Defaults[k]
+		if typeof(dv) == "Color3" then return dv end
 		return d
 	end
 	ESPFx.Flag, ESPFx.Color = flag, colorFlag
@@ -2603,19 +2631,22 @@ function Elements:AddESPPreview(o)
 			maxY = math.clamp(maxY + 2, 1, vs.Y - 1)
 		end
 
-		local col = Theme.Accent
-		local cFlag = Library.Flags[flags.Color]
-		if typeof(cFlag) == "Color3" then col = cFlag end
-		local showBox = ESPFx.Flag(flags.Box, false) == true
-		local showName = ESPFx.Flag(flags.Name, false) == true
-		local showHp = ESPFx.Flag(flags.Health, false) == true
+		local col = ESPFx.Color("esp_color", Theme.Accent)
+		local nameCol = ESPFx.Color("esp_name_color", col)
+		local skCol = ESPFx.Color("esp_skeleton_color", col)
+		local showBox = ESPFx.Flag(flags.Box, true) == true
+		local showName = ESPFx.Flag(flags.Name, true) == true
+		local showHp = ESPFx.Flag(flags.Health, true) == true
 		local showSk = ESPFx.Flag(flags.Skeleton, false) == true
+		local boxThick = math.clamp(tonumber(ESPFx.Flag("esp_box_thick", 1)) or 1, 1, 3)
+		local hpW = math.clamp(tonumber(ESPFx.Flag("esp_health_width", 2)) or 2, 1, 6)
 
 		if showBox and any and maxX > minX then
 			box.Visible = true
 			box.Position = UDim2.fromOffset(math.floor(minX), math.floor(minY))
 			box.Size = UDim2.fromOffset(math.max(1, math.floor(maxX - minX)), math.max(1, math.floor(maxY - minY)))
 			boxStroke.Color = col
+			boxStroke.Thickness = boxThick
 			if ESPFx.Flag("esp_box_fill", true) ~= false then
 				boxFill.Visible = true
 				boxFill.Position = box.Position
@@ -2630,8 +2661,10 @@ function Elements:AddESPPreview(o)
 		end
 		if showName and any then
 			nameLbl.Visible = true
-			nameLbl.Text = displayName
-			nameLbl.TextColor3 = col
+			local src = ESPFx.Flag("esp_name_source", "Display name")
+			nameLbl.Text = src == "Username" and LocalPlayer.Name or displayName
+			nameLbl.TextSize = tonumber(ESPFx.Flag("esp_name_size", 12)) or 12
+			nameLbl.TextColor3 = nameCol
 			nameLbl.Position = UDim2.fromOffset(
 				math.clamp(math.floor((minX + maxX) * 0.5 - 60), 0, math.max(0, vs.X - 120)),
 				math.clamp(math.floor(minY - 16), 0, math.max(0, vs.Y - 14))
@@ -2642,8 +2675,10 @@ function Elements:AddESPPreview(o)
 		if showHp and any then
 			hpBg.Visible = true
 			local h = math.max(16, maxY - minY)
-			hpBg.Size = UDim2.fromOffset(4, math.floor(h))
-			hpBg.Position = UDim2.fromOffset(math.clamp(math.floor(minX - 8), 0, math.max(0, vs.X - 4)), math.floor(minY))
+			local side = ESPFx.Flag("esp_health_side", "Left")
+			local bx = side == "Right" and math.floor(maxX + 4) or math.floor(minX - hpW - 4)
+			hpBg.Size = UDim2.fromOffset(hpW, math.floor(h))
+			hpBg.Position = UDim2.fromOffset(math.clamp(bx, 0, math.max(0, vs.X - hpW)), math.floor(minY))
 			local frac = 0.55 + 0.4 * math.sin(os.clock() * 0.8)
 			hpClip.Size = UDim2.fromScale(1, frac)
 			hpFill.Size = UDim2.new(1, 0, 0, math.floor(h))
@@ -2653,6 +2688,7 @@ function Elements:AddESPPreview(o)
 		end
 		if showSk then
 			ensureLines(#bones)
+			local th = math.clamp(tonumber(ESPFx.Flag("esp_skeleton_thick", 1)) or 1, 1, 4)
 			for i, pair in ipairs(bones) do
 				local a = project(pair[1].Position)
 				local b = project(pair[2].Position)
@@ -2661,9 +2697,9 @@ function Elements:AddESPPreview(o)
 					local mid = (a + b) * 0.5
 					local delta = b - a
 					ln.Visible = true
-					ln.BackgroundColor3 = col
+					ln.BackgroundColor3 = skCol
 					ln.Position = UDim2.fromOffset(mid.X, mid.Y)
-					ln.Size = UDim2.fromOffset(math.max(1, delta.Magnitude), 1)
+					ln.Size = UDim2.fromOffset(math.max(1, delta.Magnitude), th)
 					ln.Rotation = math.deg(math.atan2(delta.Y, delta.X))
 				else
 					ln.Visible = false
@@ -4049,7 +4085,7 @@ Library.Spectate = Spectate
 -- "Enable built-in ESP" off and run your own, the flags stay readable.
 -- ===================================================================
 do
-	local ESP = { Objects = {}, Enabled = false, Defaults = ESPFx.Defaults, _shown = false }
+	local ESP = { Objects = {}, Enabled = true, Defaults = ESPFx.Defaults, _shown = false }
 	Library.ESP = ESP
 	local F, C = ESPFx.Flag, ESPFx.Color
 	local BLACK, WHITE = Color3.new(0, 0, 0), Color3.new(1, 1, 1)
@@ -4162,15 +4198,37 @@ do
 		if status == "Friendly" and F("esp_hide_friendly", false) then return false end
 		local statusCol = F("esp_status_color", false) and STATUS_COL[status] or nil
 
-		local topV = cam:WorldToViewportPoint(Vector3.new(rp.X, head.Position.Y + head.Size.Y * 0.5 + 0.15, rp.Z))
-		local botY = hum.RigType == Enum.HumanoidRigType.R6 and (rp.Y - 3) or (rp.Y - (hrp.Size.Y * 0.5 + hum.HipHeight))
-		local botV = cam:WorldToViewportPoint(Vector3.new(rp.X, botY - 0.1, rp.Z))
-		if topV.Z <= 0 or botV.Z <= 0 then return false end
-		local h = botV.Y - topV.Y
-		if h < 4 then return false end
-		local w = h * 0.56
-		local fx, fy = math.floor(topV.X - w * 0.5), math.floor(topV.Y)
-		local fw, fh = math.max(math.floor(w), 2), math.floor(h)
+		-- Project body parts to get a tight, non-warped 2D box
+		local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
+		local anyOnScreen = false
+		local function consider(part)
+			if not part or not part:IsA("BasePart") then return end
+			local cf, sz = part.CFrame, part.Size * 0.5
+			-- 8 corners of the part
+			for ox = -1, 1, 2 do
+				for oy = -1, 1, 2 do
+					for oz = -1, 1, 2 do
+						local sp, on = cam:WorldToViewportPoint((cf * CFrame.new(ox * sz.X, oy * sz.Y, oz * sz.Z)).Position)
+						if sp.Z > 0 then
+							anyOnScreen = true
+							if sp.X < minX then minX = sp.X end
+							if sp.Y < minY then minY = sp.Y end
+							if sp.X > maxX then maxX = sp.X end
+							if sp.Y > maxY then maxY = sp.Y end
+						end
+					end
+				end
+			end
+		end
+		consider(head)
+		consider(hrp)
+		for _, n in ipairs({ "UpperTorso", "LowerTorso", "Torso", "LeftUpperArm", "RightUpperArm", "LeftUpperLeg", "RightUpperLeg", "Left Arm", "Right Arm", "Left Leg", "Right Leg" }) do
+			consider(char:FindFirstChild(n))
+		end
+		if not anyOnScreen or maxX - minX < 2 or maxY - minY < 4 then return false end
+		local pad = 2
+		local fx, fy = math.floor(minX - pad), math.floor(minY - pad)
+		local fw, fh = math.max(math.floor(maxX - minX + pad * 2), 2), math.max(math.floor(maxY - minY + pad * 2), 4)
 		if fx > vs.X + 40 or fx + fw < -40 or fy > vs.Y + 40 or fy + fh < -40 then return false end
 
 		-- box ---------------------------------------------------------
@@ -4391,27 +4449,33 @@ local function buildESP(W)
 	local filt = tab:AddSection("Filters", "Left")
 	local prev = tab:AddSection("Preview", "Right")
 
-	main:AddToggle("esp_enabled", { Text = "Enabled", Default = Library.ESP.Enabled, Callback = function(v) Library.ESP.Enabled = v end })
-	main:AddDivider()
+	-- Master toggle; everything else lives in sub-options (only visible while Enabled)
+	if Library.ESP.Enabled == nil then Library.ESP.Enabled = true end
+	local en = main:AddToggle("esp_enabled", {
+		Text = "Enabled",
+		Default = Library.ESP.Enabled ~= false,
+		Callback = function(v) Library.ESP.Enabled = v and true or false end,
+	})
+	local sub = en:AddSubOptions()
 
-	local box = main:AddToggle("esp_box", { Text = "Box", Default = true })
-	box:AddColorPicker("esp_color", { Default = Theme.Accent })
+	local box = sub:AddToggle("esp_box", { Text = "Box", Default = true })
+	box:AddColorPicker("esp_color", { Default = Theme.Accent, NoAnim = true, NoAlpha = true })
 	local bs = box:AddSettings({ Animations = true })
 	bs:AddDropdown("esp_box_style", { Text = "Style", Items = { "Full", "Corners" }, Default = "Full" })
 	bs:AddToggle("esp_box_outline", { Text = "Outline", Default = true })
 	bs:AddNumberInput("esp_box_thick", { Text = "Thickness", Min = 1, Max = 3, Step = 1, Default = 1, Suffix = " px" })
 	bs:AddToggle("esp_box_fill", { Text = "Fill", Default = true })
 	bs:AddDropdown("esp_fill_effect", { Text = "Fill effect", Items = { "Breathing", "Pulse", "Gradient", "Wave", "Rainbow", "Solid" }, Default = "Breathing" })
-	bs:AddLabel("Fill colour"):AddColorPicker("esp_fill_color", { Default = Theme.Accent, NoAlpha = true })
-	bs:AddLabel("Fill colour 2"):AddColorPicker("esp_fill_color2", { Default = Color3.fromRGB(110, 70, 220), NoAlpha = true })
+	bs:AddLabel("Fill colour"):AddColorPicker("esp_fill_color", { Default = Theme.Accent, NoAlpha = true, NoAnim = true })
+	bs:AddLabel("Fill colour 2"):AddColorPicker("esp_fill_color2", { Default = Color3.fromRGB(110, 70, 220), NoAlpha = true, NoAnim = true })
 	bs:AddSlider("esp_fill_alpha", { Text = "Fill opacity", Min = 5, Max = 80, Default = 35, Suffix = "%" })
 	bs:AddSlider("esp_fill_speed", { Text = "Effect speed", Min = 25, Max = 300, Default = 100, Suffix = "%" })
 
-	local sk = main:AddToggle("esp_skeleton", { Text = "Skeleton", Default = false })
-	sk:AddColorPicker("esp_skeleton_color", { Default = Color3.new(1, 1, 1), NoAlpha = true })
+	local sk = sub:AddToggle("esp_skeleton", { Text = "Skeleton", Default = false })
+	sk:AddColorPicker("esp_skeleton_color", { Default = Color3.new(1, 1, 1), NoAlpha = true, NoAnim = true })
 	sk:AddSettings():AddNumberInput("esp_skeleton_thick", { Text = "Thickness", Min = 1, Max = 4, Step = 1, Default = 1, Suffix = " px" })
 
-	local hp = main:AddToggle("esp_health", { Text = "Health bar", Default = true })
+	local hp = sub:AddToggle("esp_health", { Text = "Health bar", Default = true })
 	local hs = hp:AddSettings({ Animations = true })
 	hs:AddDropdown("esp_health_style", { Text = "Style", Items = { "Gradient", "Dynamic", "Solid" }, Default = "Gradient" })
 	hs:AddDropdown("esp_health_side", { Text = "Side", Items = { "Left", "Right" }, Default = "Left" })
@@ -4420,8 +4484,8 @@ local function buildESP(W)
 	hs:AddLabel("Low colour"):AddColorPicker("esp_hp_low", { Default = Color3.fromRGB(235, 65, 75), NoAlpha = true, NoAnim = true })
 	hs:AddToggle("esp_health_text", { Text = "Health text", Default = false })
 
-	local nm = main:AddToggle("esp_name", { Text = "Name", Default = true })
-	nm:AddColorPicker("esp_name_color", { Default = Color3.new(1, 1, 1), NoAlpha = true })
+	local nm = sub:AddToggle("esp_name", { Text = "Name", Default = true })
+	nm:AddColorPicker("esp_name_color", { Default = Color3.new(1, 1, 1), NoAlpha = true, NoAnim = true })
 	local ns = nm:AddSettings()
 	ns:AddDropdown("esp_name_source", { Text = "Show", Items = { "Display name", "Username" }, Default = "Display name" })
 	ns:AddToggle("esp_distance", { Text = "Distance", Default = true })
