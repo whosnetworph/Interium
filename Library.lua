@@ -1309,9 +1309,14 @@ local function attachPicker(holder, id, o)
 	}
 	P.Value = P.Color
 
-	local sw = new("TextButton", { Size = UDim2.fromOffset(20, 12), LayoutOrder = #holder:GetChildren(), Parent = holder })
+	local sw = new("TextButton", {
+		Size = UDim2.fromOffset(20, 12), LayoutOrder = #holder:GetChildren(),
+		Active = true, Selectable = true, ZIndex = 5, Parent = holder,
+	})
 	calib(sw)
 	local fill, face = swatchFace(sw, 20, 12)
+	if face then face.ZIndex = 6 end
+	if fill then fill.ZIndex = 7 end
 	local sws = face:FindFirstChildOfClass("UIStroke")
 	sw.MouseEnter:Connect(function() tween(sws, { Color = Theme.BorderHover }, 0.12, QUAD) end)
 	sw.MouseLeave:Connect(function() tween(sws, { Color = Theme.BorderDark }, 0.15, QUAD) end)
@@ -1650,10 +1655,21 @@ function Elements:AddToggle(id, o)
 
 	row.MouseEnter:Connect(function() hovering = true; render(true) end)
 	row.MouseLeave:Connect(function() hovering = false; render(true) end)
-	row.MouseButton1Click:Connect(function() T:SetValue(not T.Value) end)
 
 	local holder
 	local function getHolder() holder = holder or makeHolder(row); return holder end
+
+	-- Clicks on the right-side holder (colour / gear / keybind) must NOT toggle
+	row.MouseButton1Click:Connect(function()
+		if holder and holder.AbsoluteSize.X > 0 then
+			local mp = UserInputService:GetMouseLocation()
+			local hp, hs = holder.AbsolutePosition, holder.AbsoluteSize
+			if mp.X >= hp.X - 2 and mp.X <= hp.X + hs.X + 2 and mp.Y >= hp.Y - 2 and mp.Y <= hp.Y + hs.Y + 2 then
+				return
+			end
+		end
+		T:SetValue(not T.Value)
+	end)
 
 	function T:SetValue(v, silent)
 		v = v and true or false
@@ -2201,6 +2217,8 @@ do
 		esp_health_animations = true, esp_health_width = 2,
 		esp_hp_high = Color3.fromRGB(70, 220, 110), esp_hp_low = Color3.fromRGB(235, 65, 75),
 		esp_name = true, esp_name_source = "Display name", esp_name_size = 12, esp_distance = true,
+		esp_distance_color = Color3.fromRGB(200, 200, 208), esp_distance_size = 10,
+		esp_distance_color = Color3.fromRGB(200, 200, 208), esp_distance_size = 10,
 		esp_name_color = Color3.new(1, 1, 1), esp_color = nil,
 		esp_range = { Min = 0, Max = 3000 }, esp_hide_friendly = false, esp_status_color = false,
 	}
@@ -4338,11 +4356,14 @@ do
 			O.Name.TextColor3 = statusCol or C("esp_name_color", WHITE)
 			O.Name.Position = UDim2.fromOffset(fx + math.floor(fw / 2), fy - 3)
 		end
-		local showDist = showName and F("esp_distance", true)
+		local showDist = F("esp_distance", true)
 		O.Dist.Visible = showDist
 		if showDist then
+			local dsize = math.clamp(tonumber(F("esp_distance_size", 10)) or 10, 8, 18)
 			O.Dist.Text = math.floor(dist + 0.5) .. " st"
-			O.Dist.TextColor3 = Color3.fromRGB(200, 200, 208)
+			O.Dist.TextSize = dsize
+			O.Dist.Size = UDim2.fromOffset(120, dsize + 2)
+			O.Dist.TextColor3 = C("esp_distance_color", Color3.fromRGB(200, 200, 208))
 			O.Dist.Position = UDim2.fromOffset(fx + math.floor(fw / 2), fy + fh + 3)
 		end
 
@@ -4350,7 +4371,7 @@ do
 		local used = 0
 		if F("esp_skeleton", false) then
 			local list = getBones(O, char, hum)
-			local th = F("esp_skeleton_thick", 1)
+			local th = math.clamp(tonumber(F("esp_skeleton_thick", 1)) or 1, 1, 3)
 			local col = statusCol or C("esp_skeleton_color", WHITE)
 			local pts = {}
 			local function proj(part)
@@ -4368,12 +4389,16 @@ do
 					used = used + 1
 					local ln = O.Bones[used]
 					if not ln then
-						ln = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = WHITE, Parent = O.Root })
+						ln = new("Frame", {
+							AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = WHITE,
+							BorderSizePixel = 0, Parent = O.Root,
+						})
 						O.Bones[used] = ln
 					end
 					local mid, delta = (a + b) * 0.5, b - a
 					ln.Visible = true
 					ln.BackgroundColor3 = col
+					ln.BackgroundTransparency = 0
 					ln.Position = UDim2.fromOffset(mid.X, mid.Y)
 					ln.Size = UDim2.fromOffset(math.max(delta.Magnitude, 1), th)
 					ln.Rotation = math.deg(math.atan2(delta.Y, delta.X))
@@ -4411,7 +4436,8 @@ do
 		HealthText = "esp_health_text", HealthAnimations = "esp_health_animations", HealthWidth = "esp_health_width",
 		HighColor = "esp_hp_high", LowColor = "esp_hp_low",
 		Name = "esp_name", NameColor = "esp_name_color", NameSource = "esp_name_source", NameSize = "esp_name_size",
-		Distance = "esp_distance", HideFriendly = "esp_hide_friendly", StatusColors = "esp_status_color",
+		Distance = "esp_distance", DistanceColor = "esp_distance_color", DistanceSize = "esp_distance_size",
+		HideFriendly = "esp_hide_friendly", StatusColors = "esp_status_color",
 	}
 	-- ESP:Configure({ Enabled = true, Box = true, BoxStyle = "Corners", Range = { 0, 800 }, ... })
 	function ESP:Configure(cfg)
@@ -4534,8 +4560,11 @@ local function buildESP(W)
 	nm:AddColorPicker("esp_name_color", col("esp_name_color", Color3.new(1, 1, 1)))
 	local ns = nm:AddSettings()
 	ns:AddDropdown("esp_name_source", { Text = "Show", Items = { "Display name", "Username" }, Default = "Display name" })
-	ns:AddToggle("esp_distance", { Text = "Distance", Default = true })
 	ns:AddNumberInput("esp_name_size", { Text = "Text size", Min = 9, Max = 20, Step = 1, Default = 12, Suffix = " px" })
+
+	local dist = sub:AddToggle("esp_distance", { Text = "Distance", Default = true })
+	dist:AddColorPicker("esp_distance_color", col("esp_distance_color", Color3.fromRGB(200, 200, 208)))
+	dist:AddSettings():AddNumberInput("esp_distance_size", { Text = "Text size", Min = 8, Max = 18, Step = 1, Default = 10, Suffix = " px" })
 
 	local range = filt:AddRangeSlider("esp_range", {
 		Text = "Distance range", Min = 0, Max = 3000,
