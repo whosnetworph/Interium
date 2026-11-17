@@ -1523,7 +1523,7 @@ end
 local function makeHolder(row)
 	local h = new("Frame", {
 		AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.fromScale(1, 0.5), Size = UDim2.fromOffset(0, M.Row),
-		AutomaticSize = Enum.AutomaticSize.X, BackgroundTransparency = 1, Parent = row,
+		AutomaticSize = Enum.AutomaticSize.X, BackgroundTransparency = 1, Active = true, Parent = row,
 	})
 	new("UIListLayout", {
 		FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Right,
@@ -1660,14 +1660,8 @@ function Elements:AddToggle(id, o)
 	local function getHolder() holder = holder or makeHolder(row); return holder end
 
 	-- Clicks on the right-side holder (colour / gear / keybind) must NOT toggle
+	-- (the holder is Active, so it sinks its own clicks; no mouse-position maths needed)
 	row.MouseButton1Click:Connect(function()
-		if holder and holder.AbsoluteSize.X > 0 then
-			local mp = UserInputService:GetMouseLocation()
-			local hp, hs = holder.AbsolutePosition, holder.AbsoluteSize
-			if mp.X >= hp.X - 2 and mp.X <= hp.X + hs.X + 2 and mp.Y >= hp.Y - 2 and mp.Y <= hp.Y + hs.Y + 2 then
-				return
-			end
-		end
 		T:SetValue(not T.Value)
 	end)
 
